@@ -475,6 +475,15 @@ public class TelegramBotService : BackgroundService
 
         var sb = new StringBuilder();
 
+        if (!string.IsNullOrEmpty(report.IdeaKey))
+        {
+            sb.AppendLine($"💡 *Idea:* {LinkMd(report.IdeaKey)} {EscapeMd(report.IdeaSummary ?? "")}");
+            sb.AppendLine($"   Estado: {EscapeMd(report.IdeaStatus ?? "")}");
+            if (!string.IsNullOrEmpty(report.IdeaRoadmap))
+                sb.AppendLine($"   Roadmap: {EscapeMd(report.IdeaRoadmap)}");
+            sb.AppendLine();
+        }
+
         if (!string.IsNullOrEmpty(report.EpicKey))
             sb.AppendLine($"📦 *Épica:* {LinkMd(report.EpicKey!)} {EscapeMd(report.EpicSummary ?? "")} \\[{EscapeMd(report.EpicStatus ?? "")}\\]");
 

@@ -80,9 +80,31 @@ public sealed class IssueTreeService
         // Épica padre
         var parent = issue.Fields?.Parent;
         bool isEpic = IsEpicType(report.IssueType);
+        bool isIdea = IsIdeaType(report.IssueType);
 
         string? epicKey = null;
-        if (isEpic)
+        if (isIdea)
+        {
+            // Para Ideas: la idea es el contexto, la épica viene como link
+            report.IdeaKey = issue.Key;
+            report.IdeaSummary = report.IssueSummary;
+            report.IdeaStatus = report.IssueStatus;
+            report.IdeaRoadmap = _jira.GetDiscoveryRoadmapValue(issue);
+
+            // Buscar épica vinculada en los links
+            var linkedEpic = report.Links.FirstOrDefault(l => IsEpicType(l.IssueType))
+                ?? report.Blocks.FirstOrDefault(l => IsEpicType(l.IssueType))
+                ?? report.BlockedBy.FirstOrDefault(l => IsEpicType(l.IssueType));
+
+            if (linkedEpic != null)
+            {
+                epicKey = linkedEpic.Key;
+                report.EpicKey = linkedEpic.Key;
+                report.EpicSummary = linkedEpic.Summary;
+                report.EpicStatus = linkedEpic.Status;
+            }
+        }
+        else if (isEpic)
         {
             epicKey = issue.Key;
             report.EpicKey = issue.Key;
@@ -116,7 +138,7 @@ public sealed class IssueTreeService
                         Sprint = child.Fields?.GetSprintName(),
                     };
 
-                    if (isEpic)
+                    if (isEpic || isIdea)
                         report.Children.Add(treeChild);
                     else if (!child.Key.Equals(issue.Key, StringComparison.OrdinalIgnoreCase))
                         report.Siblings.Add(treeChild);
@@ -134,6 +156,9 @@ public sealed class IssueTreeService
     private static bool IsEpicType(string typeName)
         => string.Equals(typeName, "Epic", StringComparison.OrdinalIgnoreCase)
         || string.Equals(typeName, "Épica", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsIdeaType(string typeName)
+        => string.Equals(typeName, "Idea", StringComparison.OrdinalIgnoreCase);
 
     private double GetSp(JiraIssue issue)
     {

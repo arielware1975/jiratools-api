@@ -7,6 +7,7 @@ public sealed class IssueTreeReport
     public string? IdeaKey { get; set; }
     public string? IdeaSummary { get; set; }
     public string? IdeaStatus { get; set; }
+    public string? IdeaRoadmap { get; set; }
     public string? EpicKey { get; set; }
     public string? EpicSummary { get; set; }
     public string? EpicStatus { get; set; }
