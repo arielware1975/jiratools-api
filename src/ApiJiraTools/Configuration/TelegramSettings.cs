@@ -15,4 +15,7 @@ public class TelegramSettings
 
     /// <summary>Minute (UTC) for daily alerts. Default: 0.</summary>
     public int AlertMinuteUtc { get; set; } = 0;
+
+    /// <summary>Mapping dev project → discovery project. Format: "CTA:PC;EC:PEC".</summary>
+    public string DiscoveryProjectMapping { get; set; } = "CTA:PC";
 }

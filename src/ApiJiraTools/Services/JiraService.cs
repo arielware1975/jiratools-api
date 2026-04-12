@@ -275,6 +275,107 @@ public class JiraService
         return await SearchIssuesAllPagesAsync(request);
     }
 
+    // ── Discovery methods ───────────────────────────────────────────────
+
+    public async Task<List<JiraFieldDefinition>> GetFieldsAsync()
+    {
+        _logger.LogInformation("GetFieldsAsync iniciado.");
+        using var response = await _httpClient.GetAsync("/rest/api/3/field");
+        string content = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException($"Error al obtener fields. HTTP {(int)response.StatusCode}: {content}");
+        return JsonSerializer.Deserialize<List<JiraFieldDefinition>>(content, JsonOptions) ?? new();
+    }
+
+    public JiraDiscoveryFieldMap BuildDiscoveryFieldMap(List<JiraFieldDefinition> fields)
+    {
+        fields ??= new();
+        return new JiraDiscoveryFieldMap
+        {
+            RoadmapFieldId = FindFieldId(fields, "Hoja de ruta", "Roadmap"),
+            RoadmapFieldIdAlt = "customfield_10204",
+            ProjectTargetFieldId = FindFieldId(fields, "Objetivo del proyecto") ?? "customfield_10210",
+            ProjectTargetFieldIdAlt = "customfield_10078",
+            ProjectStartFieldId = FindFieldId(fields, "Inicio del proyecto") ?? "customfield_10209",
+            ProjectStartFieldIdAlt = "customfield_10077",
+            ImpactFieldId = FindFieldId(fields, "Impact", "Impacto"),
+            EffortFieldId = FindFieldId(fields, "Effort", "Esfuerzo"),
+            InsightsFieldId = FindFieldId(fields, "Insights", "Información"),
+            ScoreFieldId = FindFieldId(fields, "Puntuación del impacto", "Score"),
+            OwnerFieldId = FindFieldId(fields, "Owner", "Responsible"),
+            DeliveryStatusFieldId = FindFieldId(fields, "Estado de la entrega", "Delivery status"),
+        };
+    }
+
+    public async Task<List<JiraIssue>> GetDiscoveryIdeasAsync(string projectKey, int maxResults = 200)
+    {
+        _logger.LogInformation("GetDiscoveryIdeasAsync. projectKey={ProjectKey}", projectKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(projectKey);
+
+        string jql = $"project = {projectKey} ORDER BY Rank ASC";
+        var request = new JiraJqlSearchRequest { Jql = jql, MaxResults = maxResults, Fields = BuildStandardIssueFields() };
+        var issues = await SearchIssuesAllPagesAsync(request);
+
+        return issues
+            .Where(i => string.Equals(i.Fields?.IssueType?.Name, "Idea", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    public async Task<List<JiraIssue>> GetDiscoveryIdeasByRoadmapAsync(string projectKey, string? roadmapValue, int maxResults = 200)
+    {
+        var ideas = await GetDiscoveryIdeasAsync(projectKey, maxResults);
+        var fieldMap = BuildDiscoveryFieldMap(await GetFieldsAsync());
+
+        if (string.IsNullOrWhiteSpace(roadmapValue))
+            return ideas;
+
+        return ideas.Where(i => MatchesRoadmapFilter(GetRoadmapValue(i, fieldMap), roadmapValue)).ToList();
+    }
+
+    public string GetDiscoveryRoadmapValue(JiraIssue issue)
+    {
+        // Use hardcoded field IDs as fallback
+        if (issue?.Fields == null) return string.Empty;
+        var val = issue.Fields.GetCustomFieldOptionValue("customfield_10852");
+        if (!string.IsNullOrWhiteSpace(val)) return val;
+        val = issue.Fields.GetCustomFieldOptionValue("customfield_10204");
+        if (!string.IsNullOrWhiteSpace(val)) return val;
+        val = issue.Fields.GetCustomFieldAsString("customfield_10852");
+        if (!string.IsNullOrWhiteSpace(val)) return val;
+        val = issue.Fields.GetCustomFieldAsString("customfield_10204");
+        return val ?? string.Empty;
+    }
+
+    private static string GetRoadmapValue(JiraIssue issue, JiraDiscoveryFieldMap fieldMap)
+    {
+        if (issue?.Fields == null || fieldMap == null) return string.Empty;
+        var val = issue.Fields.GetCustomFieldOptionValue(fieldMap.RoadmapFieldId ?? "");
+        if (!string.IsNullOrWhiteSpace(val)) return val;
+        val = issue.Fields.GetCustomFieldOptionValue(fieldMap.RoadmapFieldIdAlt ?? "");
+        if (!string.IsNullOrWhiteSpace(val)) return val;
+        val = issue.Fields.GetCustomFieldAsString(fieldMap.RoadmapFieldId ?? "");
+        if (!string.IsNullOrWhiteSpace(val)) return val;
+        val = issue.Fields.GetCustomFieldAsString(fieldMap.RoadmapFieldIdAlt ?? "");
+        return val ?? string.Empty;
+    }
+
+    private static bool MatchesRoadmapFilter(string? issueValue, string? filter)
+    {
+        var f = (filter ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(f) || f.Equals("Todos", StringComparison.OrdinalIgnoreCase)) return true;
+        return string.Equals((issueValue ?? "").Trim(), f, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? FindFieldId(List<JiraFieldDefinition> fields, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            var match = fields.FirstOrDefault(f => f.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (match != null) return match.Id;
+        }
+        return null;
+    }
+
     // ── Private helpers ────────────────────────────────────────────────────
 
     private async Task<int?> GetBoardIdByProjectAsync(string projectKey)

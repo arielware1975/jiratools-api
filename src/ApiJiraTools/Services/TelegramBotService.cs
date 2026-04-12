@@ -80,6 +80,7 @@ public class TelegramBotService : BackgroundService
                 "/tree" => await HandleTree(arg, ct),
                 "/recent" => await HandleRecent(arg, ct),
                 "/epic" => await HandleEpic(arg, ct),
+                "/release" => await HandleRelease(arg, ct),
                 _ => null
             };
 
@@ -115,6 +116,9 @@ public class TelegramBotService : BackgroundService
 
             *🆕 Actividad*
             `/recent CTA` — Issues creados en los últimos 7 días
+
+            *🚀 Release*
+            `/release CTA` — Auditoría del release actual
 
             *🔔 Alertas*
             `/alerts CTA` — Chequeo de alertas ahora
@@ -252,6 +256,71 @@ public class TelegramBotService : BackgroundService
             sb.AppendLine($"*Parent:* `{issue.Fields.Parent.Key}` {EscapeMd(issue.Fields.Parent.Fields.Summary)}");
 
         return sb.ToString();
+    }
+
+    private async Task<string> HandleRelease(string? projectKey, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(projectKey))
+            return "Uso: /release CTA";
+
+        using var scope = _services.CreateScope();
+        var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
+        var release = scope.ServiceProvider.GetRequiredService<ReleaseAuditService>();
+        var settings = scope.ServiceProvider.GetRequiredService<IOptions<TelegramSettings>>().Value;
+
+        var pk = projectKey.ToUpperInvariant();
+        var discoveryKey = ResolveDiscoveryProject(pk, settings.DiscoveryProjectMapping);
+
+        var sprint = await FindActiveSprint(pk, jira);
+        if (sprint == null)
+            return $"No hay sprint activo en `{pk}`\\.";
+
+        var report = await release.BuildAsync(pk, discoveryKey, sprint.Id, sprint.Name, sprint.StartDate, sprint.EndDate);
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"🚀 *Release Audit \\- {EscapeMd(sprint.Name)}*\n");
+        sb.AppendLine($"Ideas: {report.TotalIdeas} \\| Épicas: {report.TotalEpics} \\| Issues: {report.TotalIssues}");
+        sb.AppendLine($"prox\\_release: {report.TotalProxRelease}");
+
+        if (report.HasProdCard)
+            sb.AppendLine($"Card PROD: `{report.ProdCardKey}` \\[{EscapeMd(report.ProdCardStatus)}\\]");
+        else
+            sb.AppendLine("⚠️ Sin card de Pasaje a Producción");
+
+        if (report.Alerts.Count > 0)
+        {
+            sb.AppendLine($"\n*Alertas \\({report.Alerts.Count}\\):*");
+            foreach (var alert in report.Alerts.Take(15))
+            {
+                var icon = alert.Severity switch
+                {
+                    ReleaseAuditSeverity.Error => "🔴",
+                    ReleaseAuditSeverity.Warning => "🟡",
+                    _ => "ℹ️"
+                };
+                sb.AppendLine($"{icon} `{alert.IssueKey}` {EscapeMd(alert.Message)}");
+            }
+            if (report.Alerts.Count > 15)
+                sb.AppendLine($"_\\.\\.\\.y {report.Alerts.Count - 15} más_");
+        }
+        else
+        {
+            sb.AppendLine("\n✅ Sin alertas de release\\.");
+        }
+
+        return sb.ToString();
+    }
+
+    private static string ResolveDiscoveryProject(string projectKey, string mapping)
+    {
+        if (string.IsNullOrWhiteSpace(mapping)) return projectKey;
+        foreach (var pair in mapping.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var parts = pair.Split(':', 2);
+            if (parts.Length == 2 && parts[0].Equals(projectKey, StringComparison.OrdinalIgnoreCase))
+                return parts[1].ToUpperInvariant();
+        }
+        return projectKey;
     }
 
     private async Task<string> HandleAlerts(string? projectKey, CancellationToken ct)

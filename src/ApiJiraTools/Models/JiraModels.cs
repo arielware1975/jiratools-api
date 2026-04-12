@@ -268,6 +268,43 @@ public class JiraIssueFields
         catch { return null; }
     }
 
+    public string? GetCustomFieldOptionValue(string fieldId)
+    {
+        var raw = GetCustomFieldRaw(fieldId);
+        if (raw == null) return null;
+        var value = raw.Value;
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            if (value.TryGetProperty("value", out var vp) && vp.ValueKind == JsonValueKind.String) return vp.GetString();
+            if (value.TryGetProperty("name", out var np) && np.ValueKind == JsonValueKind.String) return np.GetString();
+            if (value.TryGetProperty("label", out var lp) && lp.ValueKind == JsonValueKind.String) return lp.GetString();
+            return value.ToString();
+        }
+        if (value.ValueKind == JsonValueKind.String) return value.GetString();
+        return null;
+    }
+
+    public string? GetCustomFieldAsString(string fieldId)
+    {
+        var raw = GetCustomFieldRaw(fieldId);
+        if (raw == null) return null;
+        var value = raw.Value;
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number => value.ToString(),
+            JsonValueKind.Null or JsonValueKind.Undefined => null,
+            _ => value.ToString()
+        };
+    }
+
+    public string GetCustomFieldDisplayValue(string fieldId)
+    {
+        var opt = GetCustomFieldOptionValue(fieldId);
+        if (!string.IsNullOrWhiteSpace(opt)) return opt ?? string.Empty;
+        return GetCustomFieldAsString(fieldId) ?? string.Empty;
+    }
+
     public JsonElement? GetCustomFieldRaw(string fieldId)
     {
         if (string.IsNullOrWhiteSpace(fieldId) || ExtraFields == null)
@@ -514,4 +551,75 @@ public class JiraAttachment
 
     [JsonPropertyName("created")]
     public string? Created { get; set; }
+}
+
+// ── Field Definition ───────────────────────────────────────────────────────
+
+public class JiraFieldDefinition
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("custom")]
+    public bool? Custom { get; set; }
+
+    [JsonPropertyName("clauseNames")]
+    public List<string> ClauseNames { get; set; } = new();
+
+    [JsonPropertyName("schema")]
+    public JiraFieldSchema? Schema { get; set; }
+}
+
+public class JiraFieldSchema
+{
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+
+    [JsonPropertyName("custom")]
+    public string? Custom { get; set; }
+
+    [JsonPropertyName("customId")]
+    public long? CustomId { get; set; }
+}
+
+// ── Discovery Field Map ────────────────────────────────────────────────────
+
+public class JiraDiscoveryFieldMap
+{
+    public string? ImpactFieldId { get; set; }
+    public string? ImpactFieldIdAlt { get; set; }
+    public string? EffortFieldId { get; set; }
+    public string? EffortFieldIdAlt { get; set; }
+    public string? InsightsFieldId { get; set; }
+    public string? ScoreFieldId { get; set; }
+    public string? OwnerFieldId { get; set; }
+    public string? RoadmapFieldId { get; set; }
+    public string? RoadmapFieldIdAlt { get; set; }
+    public string? DeliveryStatusFieldId { get; set; }
+    public string? AtlassianProjectStatusFieldId { get; set; }
+    public string? ProjectStartFieldId { get; set; }
+    public string? ProjectStartFieldIdAlt { get; set; }
+    public string? ProjectTargetFieldId { get; set; }
+    public string? ProjectTargetFieldIdAlt { get; set; }
+    public string? ValueFieldId { get; set; }
+    public string? ValueFieldIdAlt { get; set; }
+    public string? ShortDescriptionFieldId { get; set; }
+    public string? DocumentsFieldId { get; set; }
+
+    [JsonIgnore]
+    public IEnumerable<string> AllConfiguredFieldIds =>
+        new[] {
+            ImpactFieldId, ImpactFieldIdAlt, EffortFieldId, EffortFieldIdAlt,
+            InsightsFieldId, ScoreFieldId, OwnerFieldId,
+            RoadmapFieldId, RoadmapFieldIdAlt, DeliveryStatusFieldId,
+            AtlassianProjectStatusFieldId, ProjectStartFieldId, ProjectStartFieldIdAlt,
+            ProjectTargetFieldId, ProjectTargetFieldIdAlt,
+            ValueFieldId, ValueFieldIdAlt, ShortDescriptionFieldId, DocumentsFieldId
+        }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase)!;
+
+    [JsonIgnore]
+    public bool HasAnyMappedField => AllConfiguredFieldIds.Any();
 }

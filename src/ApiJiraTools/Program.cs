@@ -10,6 +10,7 @@ builder.Services.AddScoped<SprintClosureService>();
 builder.Services.AddScoped<BurndownService>();
 builder.Services.AddScoped<IssueTreeService>();
 builder.Services.AddScoped<AlertService>();
+builder.Services.AddScoped<ReleaseAuditService>();
 builder.Services.AddHostedService<TelegramBotService>();
 builder.Services.AddHostedService<AlertSchedulerService>();
 builder.Services.AddControllers();
