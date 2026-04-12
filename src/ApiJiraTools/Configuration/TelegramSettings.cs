@@ -12,4 +12,7 @@ public class TelegramSettings
 
     /// <summary>Hour (UTC) to send daily alerts. Default: 12 (= 9am ART).</summary>
     public int AlertHourUtc { get; set; } = 12;
+
+    /// <summary>Minute (UTC) for daily alerts. Default: 0.</summary>
+    public int AlertMinuteUtc { get; set; } = 0;
 }

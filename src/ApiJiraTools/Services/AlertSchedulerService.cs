@@ -39,7 +39,7 @@ public class AlertSchedulerService : BackgroundService
             try
             {
                 var now = DateTime.UtcNow;
-                var nextRun = now.Date.AddHours(_settings.AlertHourUtc);
+                var nextRun = now.Date.AddHours(_settings.AlertHourUtc).AddMinutes(_settings.AlertMinuteUtc);
                 if (nextRun <= now)
                     nextRun = nextRun.AddDays(1);
 
