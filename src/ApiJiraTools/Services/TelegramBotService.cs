@@ -268,47 +268,70 @@ public class TelegramBotService : BackgroundService
 
         using var scope = _services.CreateScope();
         var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
-        var release = scope.ServiceProvider.GetRequiredService<ReleaseAuditService>();
-        var settings = scope.ServiceProvider.GetRequiredService<IOptions<TelegramSettings>>().Value;
 
         var pk = projectKey.ToUpperInvariant();
-        var discoveryKey = ResolveDiscoveryProject(pk, settings.DiscoveryProjectMapping);
-
         var sprint = await FindActiveSprint(pk, jira);
         if (sprint == null)
             return $"No hay sprint activo en `{pk}`\\.";
 
-        var report = await release.BuildAsync(pk, discoveryKey, sprint.Id, sprint.Name, sprint.StartDate, sprint.EndDate);
+        var issues = await jira.GetSprintIssuesDetailedAsync(sprint.Id);
+
+        // Issues con label prox_release
+        var proxRelease = issues.Where(i =>
+            i.Fields?.Labels?.Any(l => string.Equals(l, "prox_release", StringComparison.OrdinalIgnoreCase)) == true).ToList();
+
+        // Card de Pasaje a Producción
+        var prodCard = issues.FirstOrDefault(i =>
+            (i.Fields?.Summary?.TrimStart() ?? "").StartsWith("Pasaje a Producción", StringComparison.OrdinalIgnoreCase));
+
+        // STG cards
+        var stgCards = issues.Where(i =>
+            (i.Fields?.Summary ?? "").Contains("STG", StringComparison.OrdinalIgnoreCase) &&
+            (i.Fields?.Summary ?? "").Contains("Orquestar", StringComparison.OrdinalIgnoreCase) ||
+            (i.Fields?.Summary?.TrimStart() ?? "").StartsWith("STG", StringComparison.OrdinalIgnoreCase)).ToList();
+
+        // Clasificar prox_release
+        var done = proxRelease.Where(i => (i.Fields?.Status?.StatusCategory?.Key ?? "").Equals("done", StringComparison.OrdinalIgnoreCase)).ToList();
+        var pending = proxRelease.Where(i => !(i.Fields?.Status?.StatusCategory?.Key ?? "").Equals("done", StringComparison.OrdinalIgnoreCase)).ToList();
+        var inStg = stgCards.Where(i => !(i.Fields?.Status?.StatusCategory?.Key ?? "").Equals("done", StringComparison.OrdinalIgnoreCase)).ToList();
 
         var sb = new StringBuilder();
-        sb.AppendLine($"🚀 *Release Audit \\- {EscapeMd(sprint.Name)}*\n");
-        sb.AppendLine($"Ideas: {report.TotalIdeas} \\| Épicas: {report.TotalEpics} \\| Issues: {report.TotalIssues}");
-        sb.AppendLine($"prox\\_release: {report.TotalProxRelease}");
+        sb.AppendLine($"🚀 *RELEASE \\- {EscapeMd(sprint.Name)}*\n");
+        sb.AppendLine($"Done: {done.Count}/{proxRelease.Count}");
+        sb.AppendLine($"Pendientes: {pending.Count}");
+        sb.AppendLine($"En STG: {inStg.Count}");
 
-        if (report.HasProdCard)
-            sb.AppendLine($"Card PROD: {LinkMd(report.ProdCardKey)} \\[{EscapeMd(report.ProdCardStatus)}\\]");
-        else
+        if (prodCard != null)
+            sb.AppendLine($"Card PROD: {LinkMd(prodCard.Key)} \\[{EscapeMd(prodCard.Fields?.Status?.Name ?? "")}\\]");
+        else if (proxRelease.Count > 0)
             sb.AppendLine("⚠️ Sin card de Pasaje a Producción");
 
-        if (report.Alerts.Count > 0)
+        if (done.Count > 0)
         {
-            sb.AppendLine($"\n*Alertas \\({report.Alerts.Count}\\):*");
-            foreach (var alert in report.Alerts.Take(15))
+            sb.AppendLine("\n*✅ Done*");
+            foreach (var i in done)
             {
-                var icon = alert.Severity switch
-                {
-                    ReleaseAuditSeverity.Error => "🔴",
-                    ReleaseAuditSeverity.Warning => "🟡",
-                    _ => "ℹ️"
-                };
-                sb.AppendLine($"{icon} {LinkMd(alert.IssueKey)} {EscapeMd(alert.Message)}");
+                var date = i.Fields?.ResolutionDateValue?.ToString("dd/MM") ?? i.Fields?.UpdatedDate?.ToString("dd/MM") ?? "";
+                sb.AppendLine($"{LinkMd(i.Key)} \\| {EscapeMd(i.Fields?.Assignee?.DisplayName ?? "Sin asignar")} \\| {EscapeMd(date)} \\| {EscapeMd(i.Fields?.Summary ?? "")}");
             }
-            if (report.Alerts.Count > 15)
-                sb.AppendLine($"_\\.\\.\\.y {report.Alerts.Count - 15} más_");
+        }
+
+        if (pending.Count > 0)
+        {
+            sb.AppendLine("\n*⏳ Pendientes*");
+            foreach (var i in pending)
+                sb.AppendLine($"{LinkMd(i.Key)} \\| {EscapeMd(i.Fields?.Status?.Name ?? "")} \\| {EscapeMd(i.Fields?.Assignee?.DisplayName ?? "Sin asignar")} \\| {EscapeMd(i.Fields?.Summary ?? "")}");
+        }
+
+        if (inStg.Count > 0)
+        {
+            sb.AppendLine("\n*🔄 En STG*");
+            foreach (var i in inStg)
+                sb.AppendLine($"{LinkMd(i.Key)} \\| {EscapeMd(i.Fields?.Status?.Name ?? "")} \\| {EscapeMd(i.Fields?.Summary ?? "")}");
         }
         else
         {
-            sb.AppendLine("\n✅ Sin alertas de release\\.");
+            sb.AppendLine($"\nℹ️ Sin issues prox\\_release en STG\\.");
         }
 
         return sb.ToString();
