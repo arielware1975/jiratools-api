@@ -433,6 +433,31 @@ public class JiraLinkedIssueFields
     public JiraIssueType IssueType { get; set; } = new();
 }
 
+// ── Epic Summary ───────────────────────────────────────────────────────────
+
+public class JiraEpicSummary
+{
+    public string EpicId { get; set; } = string.Empty;
+    public string EpicKey { get; set; } = string.Empty;
+    public string EpicSummary { get; set; } = string.Empty;
+    public bool HasStgChild { get; set; }
+    public string StgIssueKey { get; set; } = string.Empty;
+    public string StgIssueSummary { get; set; } = string.Empty;
+    public int ChildCount { get; set; }
+    public int SprintChildCount { get; set; }
+    public List<string> Labels { get; set; } = new();
+    public bool IsStgNotRequired { get; set; }
+    public List<JiraEpicChildInfo> Children { get; set; } = new();
+}
+
+public class JiraEpicChildInfo
+{
+    public string Key { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public string IssueTypeName { get; set; } = string.Empty;
+    public bool IsInSelectedSprint { get; set; }
+}
+
 // ── Changelog ──────────────────────────────────────────────────────────────
 
 public class JiraIssueChangelog

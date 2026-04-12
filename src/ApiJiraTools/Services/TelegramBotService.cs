@@ -73,6 +73,12 @@ public class TelegramBotService : BackgroundService
                 "/sprints" => await HandleSprints(arg, ct),
                 "/sprint" => await HandleSprintIssues(arg, ct),
                 "/ticket" => await HandleTicket(arg, ct),
+                "/status" => await HandleStatus(arg, ct),
+                "/velocity" => await HandleVelocity(arg, ct),
+                "/burndown" => await HandleBurndown(arg, ct),
+                "/tree" => await HandleTree(arg, ct),
+                "/recent" => await HandleRecent(arg, ct),
+                "/epic" => await HandleEpic(arg, ct),
                 _ => null
             };
 
@@ -96,6 +102,12 @@ public class TelegramBotService : BackgroundService
             /sprints CTA — Sprints de un proyecto
             /sprint 123 — Issues de un sprint
             /ticket CTA\-456 — Detalle de un ticket
+            /status CTA — Status del sprint activo
+            /velocity CTA — SP por persona
+            /burndown CTA — Burndown del sprint
+            /tree CTA\-456 — Contexto completo del ticket
+            /recent CTA — Issues nuevos \(7 días\)
+            /epic CTA\-355 — Hijos de una épica
             """;
     }
 
@@ -225,6 +237,226 @@ public class TelegramBotService : BackgroundService
 
         if (issue.Fields.Parent != null)
             sb.AppendLine($"*Parent:* `{issue.Fields.Parent.Key}` {EscapeMd(issue.Fields.Parent.Fields.Summary)}");
+
+        return sb.ToString();
+    }
+
+    // ── Nuevos comandos ──────────────────────────────────────────────────
+
+    private async Task<JiraSprint?> FindActiveSprint(string projectKey, JiraService jira)
+    {
+        var sprints = await jira.GetSprintsByProjectAsync(projectKey.ToUpperInvariant());
+        return sprints.FirstOrDefault(s => s.State.Equals("active", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<string> HandleStatus(string? projectKey, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(projectKey))
+            return "Uso: /status CTA";
+
+        using var scope = _services.CreateScope();
+        var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
+        var closure = scope.ServiceProvider.GetRequiredService<SprintClosureService>();
+
+        var sprint = await FindActiveSprint(projectKey, jira);
+        if (sprint == null)
+            return $"No hay sprint activo en `{projectKey.ToUpperInvariant()}`\\.";
+
+        var project = new JiraProject { Key = projectKey.ToUpperInvariant() };
+        var report = await closure.BuildAsync(project, sprint);
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"*{EscapeMd(sprint.Name)}*\n");
+
+        double pct = report.CommittedSp > 0 ? report.DoneSp / report.CommittedSp * 100 : 0;
+        sb.AppendLine($"*Velocidad:* {report.DoneSp}/{report.CommittedSp} SP \\({pct:0}%\\)");
+        sb.AppendLine($"*Issues:* {report.DoneIssues}/{report.TotalIssues} completados");
+        sb.AppendLine($"*Bugs abiertos:* {report.OpenBugsAtClose}");
+        sb.AppendLine($"*Carry\\-over:* {report.CarryOverToDo.Count + report.CarryOverInProgress.Count} issues \\({report.CarryOverTotalSp} SP\\)");
+
+        if (report.Alerts.Count > 0)
+        {
+            sb.AppendLine("\n*Alertas:*");
+            foreach (var alert in report.Alerts)
+                sb.AppendLine($"⚠️ {EscapeMd(alert)}");
+        }
+
+        return sb.ToString();
+    }
+
+    private async Task<string> HandleVelocity(string? projectKey, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(projectKey))
+            return "Uso: /velocity CTA";
+
+        using var scope = _services.CreateScope();
+        var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
+        var closure = scope.ServiceProvider.GetRequiredService<SprintClosureService>();
+
+        var sprint = await FindActiveSprint(projectKey, jira);
+        if (sprint == null)
+            return $"No hay sprint activo en `{projectKey.ToUpperInvariant()}`\\.";
+
+        var project = new JiraProject { Key = projectKey.ToUpperInvariant() };
+        var report = await closure.BuildAsync(project, sprint);
+
+        var sb = new StringBuilder($"*Velocidad por persona \\- {EscapeMd(sprint.Name)}*\n\n");
+        foreach (var a in report.ByAssignee.OrderByDescending(x => x.DoneSp))
+            sb.AppendLine($"`{a.DoneSp}/{a.TotalSp}` SP — {EscapeMd(a.Name)} \\({a.DoneIssues}/{a.TotalIssues}\\)");
+
+        return sb.ToString();
+    }
+
+    private async Task<string> HandleBurndown(string? projectKey, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(projectKey))
+            return "Uso: /burndown CTA";
+
+        using var scope = _services.CreateScope();
+        var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
+        var burndown = scope.ServiceProvider.GetRequiredService<BurndownService>();
+
+        var sprint = await FindActiveSprint(projectKey, jira);
+        if (sprint == null)
+            return $"No hay sprint activo en `{projectKey.ToUpperInvariant()}`\\.";
+
+        var issues = await jira.GetSprintIssuesDetailedAsync(sprint.Id);
+        var start = sprint.StartDate?.DateTime ?? DateTime.UtcNow.AddDays(-14);
+        var end = sprint.EndDate?.DateTime ?? DateTime.UtcNow;
+
+        var data = burndown.Build(issues, start, end);
+
+        var sb = new StringBuilder($"*Burndown \\- {EscapeMd(sprint.Name)}*\n");
+        sb.AppendLine($"Total: {data.TotalSp} SP\n");
+
+        // Mostrar solo los puntos con datos reales
+        foreach (var p in data.DataPoints.Where(x => x.RemainingActual.HasValue))
+        {
+            var bar = new string('█', (int)(p.RemainingActual!.Value / Math.Max(1, data.TotalSp) * 20));
+            sb.AppendLine($"`{p.Date:dd/MM}` {bar} {p.RemainingActual:0.#}");
+        }
+
+        var last = data.DataPoints.LastOrDefault(x => x.RemainingActual.HasValue);
+        if (last != null)
+            sb.AppendLine($"\n*Restante:* {last.RemainingActual:0.#} SP \\(ideal: {last.RemainingIdeal}\\)");
+
+        return sb.ToString();
+    }
+
+    private async Task<string> HandleTree(string? issueKey, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(issueKey))
+            return "Uso: /tree CTA\\-456";
+
+        using var scope = _services.CreateScope();
+        var tree = scope.ServiceProvider.GetRequiredService<IssueTreeService>();
+
+        var report = await tree.BuildAsync(issueKey.ToUpperInvariant());
+
+        var sb = new StringBuilder();
+
+        if (!string.IsNullOrEmpty(report.EpicKey))
+            sb.AppendLine($"📦 *Épica:* `{report.EpicKey}` {EscapeMd(report.EpicSummary ?? "")} \\[{EscapeMd(report.EpicStatus ?? "")}\\]");
+
+        sb.AppendLine($"📋 *Issue:* `{report.IssueKey}` {EscapeMd(report.IssueSummary)}");
+        sb.AppendLine($"   Estado: {EscapeMd(report.IssueStatus)} \\| {EscapeMd(report.IssueAssignee)}");
+
+        if (report.IssueStoryPoints > 0)
+            sb.AppendLine($"   SP: {report.IssueStoryPoints}");
+
+        if (report.BlockedBy.Count > 0)
+        {
+            sb.AppendLine("\n🚫 *Bloqueado por:*");
+            foreach (var b in report.BlockedBy)
+                sb.AppendLine($"   `{b.Key}` {EscapeMd(b.Summary)} \\[{EscapeMd(b.Status)}\\]");
+        }
+
+        if (report.Blocks.Count > 0)
+        {
+            sb.AppendLine("\n🔒 *Bloquea:*");
+            foreach (var b in report.Blocks)
+                sb.AppendLine($"   `{b.Key}` {EscapeMd(b.Summary)} \\[{EscapeMd(b.Status)}\\]");
+        }
+
+        if (report.Siblings.Count > 0)
+        {
+            sb.AppendLine($"\n👥 *Hermanos en épica:* \\({report.Siblings.Count}\\)");
+            foreach (var s in report.Siblings.Take(10))
+            {
+                var icon = s.Status.Contains("Done", StringComparison.OrdinalIgnoreCase) ? "✅" : "🔄";
+                sb.AppendLine($"   {icon} `{s.Key}` {EscapeMd(s.Summary)}");
+            }
+        }
+
+        if (report.Children.Count > 0)
+        {
+            sb.AppendLine($"\n📎 *Hijos:* \\({report.Children.Count}\\)");
+            foreach (var c in report.Children.Take(10))
+            {
+                var icon = c.Status.Contains("Done", StringComparison.OrdinalIgnoreCase) ? "✅" : "🔄";
+                sb.AppendLine($"   {icon} `{c.Key}` {EscapeMd(c.Summary)}");
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private async Task<string> HandleRecent(string? projectKey, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(projectKey))
+            return "Uso: /recent CTA";
+
+        using var scope = _services.CreateScope();
+        var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
+
+        string jql = $"project = \"{projectKey.ToUpperInvariant()}\" AND created >= -7d ORDER BY created DESC";
+        var issues = await jira.SearchIssuesByJqlAsync(jql, 50);
+
+        if (issues.Count == 0)
+            return $"No hay issues nuevos en los últimos 7 días en `{projectKey.ToUpperInvariant()}`\\.";
+
+        var sb = new StringBuilder($"*Issues nuevos \\(7d\\) \\- {projectKey.ToUpperInvariant()}:*\n\n");
+        foreach (var issue in issues.Take(20))
+        {
+            var type = issue.Fields?.IssueType?.Name ?? "";
+            sb.AppendLine($"`{issue.Key}` {EscapeMd(issue.Fields?.Summary ?? "")} \\[{EscapeMd(type)}\\]");
+        }
+
+        if (issues.Count > 20)
+            sb.AppendLine($"\n_{issues.Count - 20} más\\.\\.\\._");
+
+        return sb.ToString();
+    }
+
+    private async Task<string> HandleEpic(string? epicKey, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(epicKey))
+            return "Uso: /epic CTA\\-355";
+
+        using var scope = _services.CreateScope();
+        var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
+
+        var children = await jira.GetEpicChildIssuesAsync(epicKey.ToUpperInvariant());
+        if (children.Count == 0)
+            return $"No se encontraron hijos para `{epicKey.ToUpperInvariant()}`\\.";
+
+        var sb = new StringBuilder($"*Épica {epicKey.ToUpperInvariant()}* — {children.Count} issues\n\n");
+
+        foreach (var child in children)
+        {
+            var cat = child.Fields?.Status?.StatusCategory?.Key ?? "";
+            var icon = cat switch { "done" => "✅", "indeterminate" => "🔄", _ => "📋" };
+            var sp = child.Fields?.StoryPoints ?? child.Fields?.StoryPointEstimate;
+            var spText = sp.HasValue ? $" \\({sp.Value}sp\\)" : "";
+            sb.AppendLine($"{icon} `{child.Key}` {EscapeMd(child.Fields?.Summary ?? "")}{spText}");
+        }
+
+        var totalSp = children.Sum(c => c.Fields?.StoryPoints ?? c.Fields?.StoryPointEstimate ?? 0);
+        var doneSp = children
+            .Where(c => (c.Fields?.Status?.StatusCategory?.Key ?? "").Equals("done", StringComparison.OrdinalIgnoreCase))
+            .Sum(c => c.Fields?.StoryPoints ?? c.Fields?.StoryPointEstimate ?? 0);
+
+        sb.AppendLine($"\n*SP:* {doneSp}/{totalSp} completados");
 
         return sb.ToString();
     }

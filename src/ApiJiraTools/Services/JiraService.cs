@@ -176,6 +176,105 @@ public class JiraService
         return issue;
     }
 
+    public async Task<List<JiraEpicSummary>> GetEpicsBySprintAsync(int sprintId)
+    {
+        _logger.LogInformation("GetEpicsBySprintAsync iniciado. sprintId={SprintId}", sprintId);
+        var sprintIssues = await GetSprintIssuesDetailedAsync(sprintId);
+        if (sprintIssues.Count == 0)
+            return new List<JiraEpicSummary>();
+
+        var parentEpics = sprintIssues
+            .Where(x => x.Fields?.Parent != null &&
+                        string.Equals(x.Fields.Parent.Fields?.IssueType?.Name, "Epic", StringComparison.OrdinalIgnoreCase))
+            .Select(x => x.Fields!.Parent!)
+            .GroupBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .OrderBy(x => x.Key)
+            .ToList();
+
+        var epicSummaries = new List<JiraEpicSummary>();
+
+        foreach (var epicIssue in parentEpics)
+        {
+            string epicKey = epicIssue.Key;
+            var childIssues = await GetEpicChildIssuesAsync(epicKey);
+
+            var stgIssue = childIssues.FirstOrDefault(x =>
+                x.Fields != null && !string.IsNullOrWhiteSpace(x.Fields.Summary) &&
+                x.Fields.Summary.StartsWith("STG", StringComparison.OrdinalIgnoreCase));
+
+            var sprintIssueKeys = new HashSet<string>(sprintIssues.Select(x => x.Key), StringComparer.OrdinalIgnoreCase);
+
+            var childInfos = childIssues
+                .Select(child => new JiraEpicChildInfo
+                {
+                    Key = child.Key,
+                    Summary = child.Fields?.Summary ?? string.Empty,
+                    IssueTypeName = child.Fields?.IssueType?.Name ?? string.Empty,
+                    IsInSelectedSprint = sprintIssueKeys.Contains(child.Key)
+                })
+                .OrderByDescending(x => x.IsInSelectedSprint)
+                .ThenBy(x => x.Key)
+                .ToList();
+
+            var epicFullIssue = await GetIssueByKeyAsync(epicKey);
+            var epicLabels = epicFullIssue.Fields?.Labels?.ToList() ?? new List<string>();
+
+            epicSummaries.Add(new JiraEpicSummary
+            {
+                EpicId = epicFullIssue.Id,
+                EpicKey = epicKey,
+                EpicSummary = epicFullIssue.Fields?.Summary ?? epicIssue.Fields?.Summary ?? epicKey,
+                HasStgChild = stgIssue != null,
+                StgIssueKey = stgIssue?.Key ?? string.Empty,
+                StgIssueSummary = stgIssue?.Fields?.Summary ?? string.Empty,
+                ChildCount = childInfos.Count,
+                SprintChildCount = childInfos.Count(x => x.IsInSelectedSprint),
+                Labels = epicLabels,
+                IsStgNotRequired = epicLabels.Any(x => string.Equals(x, "stg_not_required", StringComparison.OrdinalIgnoreCase)),
+                Children = childInfos
+            });
+        }
+
+        _logger.LogInformation("GetEpicsBySprintAsync finalizado. Épicas: {Count}.", epicSummaries.Count);
+        return epicSummaries;
+    }
+
+    public async Task<List<JiraIssue>> GetEpicChildIssuesAsync(string epicKey)
+    {
+        _logger.LogInformation("GetEpicChildIssuesAsync iniciado. epicKey={EpicKey}", epicKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(epicKey);
+
+        string jql = $"(parent = {epicKey} OR \"Epic Link\" = {epicKey}) ORDER BY key ASC";
+        var request = new JiraJqlSearchRequest
+        {
+            Jql = jql,
+            MaxResults = 100,
+            Fields = BuildStandardIssueFields()
+        };
+
+        var childIssues = await SearchIssuesAllPagesAsync(request);
+        childIssues = childIssues
+            .GroupBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
+
+        _logger.LogInformation("GetEpicChildIssuesAsync finalizado. Hijos: {Count}.", childIssues.Count);
+        return childIssues;
+    }
+
+    public async Task<List<JiraIssue>> SearchIssuesByJqlAsync(string jql, int maxResults = 100)
+    {
+        _logger.LogInformation("SearchIssuesByJqlAsync. JQL={Jql}", jql);
+        var request = new JiraJqlSearchRequest
+        {
+            Jql = jql,
+            MaxResults = maxResults,
+            Fields = BuildStandardIssueFields()
+        };
+        return await SearchIssuesAllPagesAsync(request);
+    }
+
     // ── Private helpers ────────────────────────────────────────────────────
 
     private async Task<int?> GetBoardIdByProjectAsync(string projectKey)
