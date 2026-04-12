@@ -196,7 +196,7 @@ public class TelegramBotService : BackgroundService
             foreach (var issue in group)
             {
                 var sp = issue.Fields.StoryPoints ?? issue.Fields.StoryPointEstimate;
-                var spText = sp.HasValue ? $" \\({sp.Value}sp\\)" : "";
+                var spText = sp.HasValue ? $" \\({EscapeMd(sp.Value.ToString())}sp\\)" : "";
                 sb.AppendLine($"{icon} `{issue.Key}` {EscapeMd(issue.Fields.Summary)}{spText}");
             }
         }
@@ -207,7 +207,7 @@ public class TelegramBotService : BackgroundService
             .Where(i => i.Fields.Status.StatusCategory.Key == "done")
             .Sum(i => i.Fields.StoryPoints ?? i.Fields.StoryPointEstimate ?? 0);
 
-        sb.AppendLine($"\n*SP:* {doneSp}/{totalSp} completados");
+        sb.AppendLine($"\n*SP:* {EscapeMd($"{doneSp}/{totalSp}")} completados");
 
         return sb.ToString();
     }
@@ -277,10 +277,10 @@ public class TelegramBotService : BackgroundService
         sb.AppendLine($"*{EscapeMd(sprint.Name)}*\n");
 
         double pct = report.CommittedSp > 0 ? report.DoneSp / report.CommittedSp * 100 : 0;
-        sb.AppendLine($"*Velocidad:* {report.DoneSp}/{report.CommittedSp} SP \\({pct:0}%\\)");
+        sb.AppendLine($"*Velocidad:* {EscapeMd($"{report.DoneSp}/{report.CommittedSp}")} SP \\({EscapeMd($"{pct:0}")}%\\)");
         sb.AppendLine($"*Issues:* {report.DoneIssues}/{report.TotalIssues} completados");
         sb.AppendLine($"*Bugs abiertos:* {report.OpenBugsAtClose}");
-        sb.AppendLine($"*Carry\\-over:* {report.CarryOverToDo.Count + report.CarryOverInProgress.Count} issues \\({report.CarryOverTotalSp} SP\\)");
+        sb.AppendLine($"*Carry\\-over:* {report.CarryOverToDo.Count + report.CarryOverInProgress.Count} issues \\({EscapeMd($"{report.CarryOverTotalSp}")} SP\\)");
 
         if (report.Alerts.Count > 0)
         {
@@ -335,18 +335,18 @@ public class TelegramBotService : BackgroundService
         var data = burndown.Build(issues, start, end);
 
         var sb = new StringBuilder($"*Burndown \\- {EscapeMd(sprint.Name)}*\n");
-        sb.AppendLine($"Total: {data.TotalSp} SP\n");
+        sb.AppendLine($"Total: {EscapeMd($"{data.TotalSp}")} SP\n");
 
         // Mostrar solo los puntos con datos reales
         foreach (var p in data.DataPoints.Where(x => x.RemainingActual.HasValue))
         {
             var bar = new string('█', (int)(p.RemainingActual!.Value / Math.Max(1, data.TotalSp) * 20));
-            sb.AppendLine($"`{p.Date:dd/MM}` {bar} {p.RemainingActual:0.#}");
+            sb.AppendLine($"`{p.Date:dd/MM}` {bar} {EscapeMd($"{p.RemainingActual:0.#}")}");
         }
 
         var last = data.DataPoints.LastOrDefault(x => x.RemainingActual.HasValue);
         if (last != null)
-            sb.AppendLine($"\n*Restante:* {last.RemainingActual:0.#} SP \\(ideal: {last.RemainingIdeal}\\)");
+            sb.AppendLine($"\n*Restante:* {EscapeMd($"{last.RemainingActual:0.#}")} SP \\(ideal: {EscapeMd($"{last.RemainingIdeal}")}\\)");
 
         return sb.ToString();
     }
@@ -370,7 +370,7 @@ public class TelegramBotService : BackgroundService
         sb.AppendLine($"   Estado: {EscapeMd(report.IssueStatus)} \\| {EscapeMd(report.IssueAssignee)}");
 
         if (report.IssueStoryPoints > 0)
-            sb.AppendLine($"   SP: {report.IssueStoryPoints}");
+            sb.AppendLine($"   SP: {EscapeMd($"{report.IssueStoryPoints}")}");
 
         if (report.BlockedBy.Count > 0)
         {
@@ -455,7 +455,7 @@ public class TelegramBotService : BackgroundService
             var cat = child.Fields?.Status?.StatusCategory?.Key ?? "";
             var icon = cat switch { "done" => "✅", "indeterminate" => "🔄", _ => "📋" };
             var sp = child.Fields?.StoryPoints ?? child.Fields?.StoryPointEstimate;
-            var spText = sp.HasValue ? $" \\({sp.Value}sp\\)" : "";
+            var spText = sp.HasValue ? $" \\({EscapeMd(sp.Value.ToString())}sp\\)" : "";
             sb.AppendLine($"{icon} `{child.Key}` {EscapeMd(child.Fields?.Summary ?? "")}{spText}");
         }
 
@@ -464,7 +464,7 @@ public class TelegramBotService : BackgroundService
             .Where(c => (c.Fields?.Status?.StatusCategory?.Key ?? "").Equals("done", StringComparison.OrdinalIgnoreCase))
             .Sum(c => c.Fields?.StoryPoints ?? c.Fields?.StoryPointEstimate ?? 0);
 
-        sb.AppendLine($"\n*SP:* {doneSp}/{totalSp} completados");
+        sb.AppendLine($"\n*SP:* {EscapeMd($"{doneSp}/{totalSp}")} completados");
 
         return sb.ToString();
     }
