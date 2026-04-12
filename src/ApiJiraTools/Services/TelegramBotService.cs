@@ -14,15 +14,18 @@ public class TelegramBotService : BackgroundService
     private readonly IServiceProvider _services;
     private readonly ILogger<TelegramBotService> _logger;
     private readonly string _botToken;
+    private readonly string _jiraBaseUrl;
 
     public TelegramBotService(
         IServiceProvider services,
         IOptions<TelegramSettings> options,
+        IOptions<JiraSettings> jiraOptions,
         ILogger<TelegramBotService> logger)
     {
         _services = services;
         _logger = logger;
         _botToken = options.Value.BotToken;
+        _jiraBaseUrl = jiraOptions.Value.BaseUrl.TrimEnd('/');
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -206,7 +209,7 @@ public class TelegramBotService : BackgroundService
             {
                 var sp = issue.Fields.StoryPoints ?? issue.Fields.StoryPointEstimate;
                 var spText = sp.HasValue ? $" \\({EscapeMd(sp.Value.ToString())}sp\\)" : "";
-                sb.AppendLine($"{icon} `{issue.Key}` {EscapeMd(issue.Fields.Summary)}{spText}");
+                sb.AppendLine($"{icon} {LinkMd(issue.Key)} {EscapeMd(issue.Fields.Summary)}{spText}");
             }
         }
 
@@ -232,7 +235,7 @@ public class TelegramBotService : BackgroundService
         var issue = await jira.GetIssueByKeyAsync(issueKey.ToUpperInvariant());
 
         var sb = new StringBuilder();
-        sb.AppendLine($"*{EscapeMd(issue.Key)}* — {EscapeMd(issue.Fields.Summary)}");
+        sb.AppendLine($"*{LinkMd(issue.Key)}* — {EscapeMd(issue.Fields.Summary)}");
         sb.AppendLine();
         sb.AppendLine($"*Tipo:* {EscapeMd(issue.Fields.IssueType.Name)}");
         sb.AppendLine($"*Estado:* {EscapeMd(issue.Fields.Status.Name)}");
@@ -253,7 +256,7 @@ public class TelegramBotService : BackgroundService
             sb.AppendLine($"*Sprint:* {EscapeMd(sprint)}");
 
         if (issue.Fields.Parent != null)
-            sb.AppendLine($"*Parent:* `{issue.Fields.Parent.Key}` {EscapeMd(issue.Fields.Parent.Fields.Summary)}");
+            sb.AppendLine($"*Parent:* {LinkMd(issue.Fields.Parent.Key)} {EscapeMd(issue.Fields.Parent.Fields.Summary)}");
 
         return sb.ToString();
     }
@@ -283,7 +286,7 @@ public class TelegramBotService : BackgroundService
         sb.AppendLine($"prox\\_release: {report.TotalProxRelease}");
 
         if (report.HasProdCard)
-            sb.AppendLine($"Card PROD: `{report.ProdCardKey}` \\[{EscapeMd(report.ProdCardStatus)}\\]");
+            sb.AppendLine($"Card PROD: {LinkMd(report.ProdCardKey)} \\[{EscapeMd(report.ProdCardStatus)}\\]");
         else
             sb.AppendLine("⚠️ Sin card de Pasaje a Producción");
 
@@ -298,7 +301,7 @@ public class TelegramBotService : BackgroundService
                     ReleaseAuditSeverity.Warning => "🟡",
                     _ => "ℹ️"
                 };
-                sb.AppendLine($"{icon} `{alert.IssueKey}` {EscapeMd(alert.Message)}");
+                sb.AppendLine($"{icon} {LinkMd(alert.IssueKey)} {EscapeMd(alert.Message)}");
             }
             if (report.Alerts.Count > 15)
                 sb.AppendLine($"_\\.\\.\\.y {report.Alerts.Count - 15} más_");
@@ -450,9 +453,9 @@ public class TelegramBotService : BackgroundService
         var sb = new StringBuilder();
 
         if (!string.IsNullOrEmpty(report.EpicKey))
-            sb.AppendLine($"📦 *Épica:* `{report.EpicKey}` {EscapeMd(report.EpicSummary ?? "")} \\[{EscapeMd(report.EpicStatus ?? "")}\\]");
+            sb.AppendLine($"📦 *Épica:* {LinkMd(report.EpicKey!)} {EscapeMd(report.EpicSummary ?? "")} \\[{EscapeMd(report.EpicStatus ?? "")}\\]");
 
-        sb.AppendLine($"📋 *Issue:* `{report.IssueKey}` {EscapeMd(report.IssueSummary)}");
+        sb.AppendLine($"📋 *Issue:* {LinkMd(report.IssueKey)} {EscapeMd(report.IssueSummary)}");
         sb.AppendLine($"   Estado: {EscapeMd(report.IssueStatus)} \\| {EscapeMd(report.IssueAssignee)}");
 
         if (report.IssueStoryPoints > 0)
@@ -462,14 +465,14 @@ public class TelegramBotService : BackgroundService
         {
             sb.AppendLine("\n🚫 *Bloqueado por:*");
             foreach (var b in report.BlockedBy)
-                sb.AppendLine($"   `{b.Key}` {EscapeMd(b.Summary)} \\[{EscapeMd(b.Status)}\\]");
+                sb.AppendLine($"   {LinkMd(b.Key)} {EscapeMd(b.Summary)} \\[{EscapeMd(b.Status)}\\]");
         }
 
         if (report.Blocks.Count > 0)
         {
             sb.AppendLine("\n🔒 *Bloquea:*");
             foreach (var b in report.Blocks)
-                sb.AppendLine($"   `{b.Key}` {EscapeMd(b.Summary)} \\[{EscapeMd(b.Status)}\\]");
+                sb.AppendLine($"   {LinkMd(b.Key)} {EscapeMd(b.Summary)} \\[{EscapeMd(b.Status)}\\]");
         }
 
         if (report.Siblings.Count > 0)
@@ -478,7 +481,7 @@ public class TelegramBotService : BackgroundService
             foreach (var s in report.Siblings.Take(10))
             {
                 var icon = s.Status.Contains("Done", StringComparison.OrdinalIgnoreCase) ? "✅" : "🔄";
-                sb.AppendLine($"   {icon} `{s.Key}` {EscapeMd(s.Summary)}");
+                sb.AppendLine($"   {icon} {LinkMd(s.Key)} {EscapeMd(s.Summary)}");
             }
         }
 
@@ -488,7 +491,7 @@ public class TelegramBotService : BackgroundService
             foreach (var c in report.Children.Take(10))
             {
                 var icon = c.Status.Contains("Done", StringComparison.OrdinalIgnoreCase) ? "✅" : "🔄";
-                sb.AppendLine($"   {icon} `{c.Key}` {EscapeMd(c.Summary)}");
+                sb.AppendLine($"   {icon} {LinkMd(c.Key)} {EscapeMd(c.Summary)}");
             }
         }
 
@@ -513,7 +516,7 @@ public class TelegramBotService : BackgroundService
         foreach (var issue in issues.Take(20))
         {
             var type = issue.Fields?.IssueType?.Name ?? "";
-            sb.AppendLine($"`{issue.Key}` {EscapeMd(issue.Fields?.Summary ?? "")} \\[{EscapeMd(type)}\\]");
+            sb.AppendLine($"{LinkMd(issue.Key)} {EscapeMd(issue.Fields?.Summary ?? "")} \\[{EscapeMd(type)}\\]");
         }
 
         if (issues.Count > 20)
@@ -542,7 +545,7 @@ public class TelegramBotService : BackgroundService
             var icon = cat switch { "done" => "✅", "indeterminate" => "🔄", _ => "📋" };
             var sp = child.Fields?.StoryPoints ?? child.Fields?.StoryPointEstimate;
             var spText = sp.HasValue ? $" \\({EscapeMd(sp.Value.ToString())}sp\\)" : "";
-            sb.AppendLine($"{icon} `{child.Key}` {EscapeMd(child.Fields?.Summary ?? "")}{spText}");
+            sb.AppendLine($"{icon} {LinkMd(child.Key)} {EscapeMd(child.Fields?.Summary ?? "")}{spText}");
         }
 
         var totalSp = children.Sum(c => c.Fields?.StoryPoints ?? c.Fields?.StoryPointEstimate ?? 0);
@@ -555,10 +558,18 @@ public class TelegramBotService : BackgroundService
         return sb.ToString();
     }
 
+    /// <summary>Creates a clickable Jira link in MarkdownV2 format.</summary>
+    private string LinkMd(string issueKey)
+    {
+        var url = $"{_jiraBaseUrl}/browse/{issueKey}";
+        // In MarkdownV2 links: [text](url) — escape only inside text, URL needs ) and \ escaped
+        var escapedUrl = url.Replace("\\", "\\\\").Replace(")", "\\)");
+        return $"[{EscapeMd(issueKey)}]({escapedUrl})";
+    }
+
     private static string EscapeMd(string text)
     {
         if (string.IsNullOrEmpty(text)) return text;
-        // MarkdownV2 requires escaping these characters
         var chars = new[] { '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!' };
         var sb = new StringBuilder(text.Length);
         foreach (var c in text)
