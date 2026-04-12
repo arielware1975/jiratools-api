@@ -95,19 +95,27 @@ public class TelegramBotService : BackgroundService
     private static string GetHelpText()
     {
         return """
-            *JiraTools API Bot*
+            *JiraTools API Bot* 🛠️
 
-            Comandos disponibles:
-            /projects — Lista de proyectos
-            /sprints CTA — Sprints de un proyecto
-            /sprint 123 — Issues de un sprint
-            /ticket CTA\-456 — Detalle de un ticket
-            /status CTA — Status del sprint activo
-            /velocity CTA — SP por persona
-            /burndown CTA — Burndown del sprint
-            /tree CTA\-456 — Contexto completo del ticket
-            /recent CTA — Issues nuevos \(7 días\)
-            /epic CTA\-355 — Hijos de una épica
+            *📋 Proyectos y Sprints*
+            `/projects` — Lista todos los proyectos
+            `/sprints CTA` — Sprints del proyecto CTA
+            `/sprint 285` — Issues del sprint 285
+
+            *🔍 Tickets*
+            `/ticket CTA\-922` — Detalle de un ticket
+            `/tree CTA\-922` — Contexto completo: épica, hermanos, blockers
+            `/epic CTA\-355` — Todos los hijos de una épica
+
+            *📊 Sprint Activo*
+            `/status CTA` — Resumen: velocidad, carry\-over, alertas
+            `/velocity CTA` — SP completados por persona
+            `/burndown CTA` — Progreso diario del sprint
+
+            *🆕 Actividad*
+            `/recent CTA` — Issues creados en los últimos 7 días
+
+            _Reemplazá CTA por la key de tu proyecto_
             """;
     }
 
