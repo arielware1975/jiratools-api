@@ -4,7 +4,9 @@
       "Bash(dotnet build:*)",
       "Bash(dotnet run:*)",
       "Bash(curl -s http://localhost:5099/api/health)",
-      "Bash(pkill -f \"dotnet.*ApiJiraTools\")"
+      "Bash(pkill -f \"dotnet.*ApiJiraTools\")",
+      "Bash(gh auth:*)",
+      "Bash(gh repo:*)"
     ]
   }
 }
