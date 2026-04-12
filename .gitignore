@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.cache
+
+# Credenciales locales
+appsettings.Development.json
+
+# Logs
+*.log
+
+# Publish
+publish/
