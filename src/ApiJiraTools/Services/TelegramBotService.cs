@@ -68,11 +68,12 @@ public class TelegramBotService : BackgroundService
         {
             var response = command switch
             {
-                "/start" or "/help" => GetHelpText(),
+                "/start" or "/help" => GetHelpText(chatId),
                 "/projects" => await HandleProjects(ct),
                 "/sprints" => await HandleSprints(arg, ct),
                 "/sprint" => await HandleSprintIssues(arg, ct),
                 "/ticket" => await HandleTicket(arg, ct),
+                "/alerts" => await HandleAlerts(arg, ct),
                 "/status" => await HandleStatus(arg, ct),
                 "/velocity" => await HandleVelocity(arg, ct),
                 "/burndown" => await HandleBurndown(arg, ct),
@@ -92,9 +93,9 @@ public class TelegramBotService : BackgroundService
         }
     }
 
-    private static string GetHelpText()
+    private static string GetHelpText(long chatId)
     {
-        return """
+        return $"""
             *JiraTools API Bot* 🛠️
 
             *📋 Proyectos y Sprints*
@@ -115,6 +116,10 @@ public class TelegramBotService : BackgroundService
             *🆕 Actividad*
             `/recent CTA` — Issues creados en los últimos 7 días
 
+            *🔔 Alertas*
+            `/alerts CTA` — Chequeo de alertas ahora
+
+            _Tu chat ID: `{chatId}`_
             _Reemplazá CTA por la key de tu proyecto_
             """;
     }
@@ -247,6 +252,18 @@ public class TelegramBotService : BackgroundService
             sb.AppendLine($"*Parent:* `{issue.Fields.Parent.Key}` {EscapeMd(issue.Fields.Parent.Fields.Summary)}");
 
         return sb.ToString();
+    }
+
+    private async Task<string> HandleAlerts(string? projectKey, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(projectKey))
+            return "Uso: /alerts CTA";
+
+        using var scope = _services.CreateScope();
+        var alertService = scope.ServiceProvider.GetRequiredService<AlertService>();
+
+        var message = await alertService.BuildDailyAlertAsync(projectKey.ToUpperInvariant());
+        return message ?? $"✅ Sin alertas para `{projectKey.ToUpperInvariant()}`\\. Todo bien\\.";
     }
 
     // ── Nuevos comandos ──────────────────────────────────────────────────
