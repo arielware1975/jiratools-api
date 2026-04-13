@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using ApiJiraTools.Configuration;
 using ApiJiraTools.Models;
@@ -16,6 +17,7 @@ public class TelegramBotService : BackgroundService
     private readonly string _botToken;
     private readonly string _jiraBaseUrl;
     private readonly string _discoveryMapping;
+    private static readonly ConcurrentDictionary<long, string> _defaultProject = new();
 
     public TelegramBotService(
         IServiceProvider services,
@@ -69,25 +71,29 @@ public class TelegramBotService : BackgroundService
         var command = parts[0].ToLowerInvariant().Split('@')[0]; // remove @botname
         var arg = parts.Length > 1 ? parts[1].Trim() : null;
 
+        // Para comandos que usan projectKey, resolver con el default del chat
+        var projectArg = ResolveProjectArg(arg, chatId);
+
         try
         {
             var response = command switch
             {
                 "/start" or "/help" => GetHelpText(chatId),
+                "/project" => HandleSetProject(arg, chatId),
                 "/projects" => await HandleProjects(ct),
-                "/sprints" => await HandleSprints(arg, ct),
-                "/sprint" => await HandleSprintIssues(arg, ct),
-                "/ticket" => await HandleTicket(arg, ct),
-                "/alerts" => await HandleAlerts(arg, ct),
-                "/status" => await HandleStatus(arg, ct),
-                "/velocity" => await HandleVelocity(arg, ct),
-                "/burndown" => await HandleBurndown(arg, ct),
-                "/tree" => await HandleTree(arg, ct),
-                "/recent" => await HandleRecent(arg, ct),
-                "/epic" => await HandleEpic(arg, ct),
-                "/release" => await HandleRelease(arg, ct),
-                "/analyze" => await HandleAnalyze(arg, chatId, bot, ct),
-                "/ideas" => await HandleIdeas(arg, ct),
+                "/sprints" => await HandleSprints(projectArg, ct),
+                "/sprint" => await HandleSprintIssues(arg, ct), // recibe sprint ID, no project
+                "/ticket" => await HandleTicket(arg, ct),        // recibe issue key
+                "/alerts" => await HandleAlerts(projectArg, ct),
+                "/status" => await HandleStatus(projectArg, ct),
+                "/velocity" => await HandleVelocity(projectArg, ct),
+                "/burndown" => await HandleBurndown(projectArg, ct),
+                "/tree" => await HandleTree(arg, ct),             // recibe issue key
+                "/recent" => await HandleRecent(projectArg, ct),
+                "/epic" => await HandleEpic(arg, ct),             // recibe issue key
+                "/release" => await HandleRelease(projectArg, ct),
+                "/analyze" => await HandleAnalyze(arg, chatId, bot, ct), // recibe issue key
+                "/ideas" => await HandleIdeas(projectArg, ct),
                 _ => null
             };
 
@@ -101,14 +107,47 @@ public class TelegramBotService : BackgroundService
         }
     }
 
+    private static string? ResolveProjectArg(string? arg, long chatId)
+    {
+        // Si el usuario pasó argumento, usarlo
+        if (!string.IsNullOrWhiteSpace(arg)) return arg;
+        // Si no, usar el proyecto por defecto del chat
+        return _defaultProject.TryGetValue(chatId, out var pk) ? pk : null;
+    }
+
+    private static string HandleSetProject(string? arg, long chatId)
+    {
+        if (string.IsNullOrWhiteSpace(arg))
+        {
+            if (_defaultProject.TryGetValue(chatId, out var current))
+                return $"📌 Proyecto actual: *{EscapeMd(current)}*\nUsá `/project OTRO` para cambiarlo\\.";
+            return "Uso: `/project CTA`\nEstablece el proyecto por defecto para no tener que escribirlo en cada comando\\.";
+        }
+
+        var pk = arg.ToUpperInvariant();
+        _defaultProject[chatId] = pk;
+        return $"✅ Proyecto por defecto: *{EscapeMd(pk)}*\nTodos los comandos usarán este proyecto si no especificás otro\\.";
+    }
+
     private static string GetHelpText(long chatId)
     {
+        var currentProject = _defaultProject.TryGetValue(chatId, out var cp) ? cp : null;
+        var projectInfo = currentProject != null
+            ? $"_📌 Proyecto activo: *{EscapeMd(currentProject)}* \\(podés omitir la key en los comandos\\)_"
+            : "_Sin proyecto por defecto\\. Usá `/project CTA` para configurarlo\\._";
+
         return $"""
             *JiraTools API Bot* 🛠️
 
+            {projectInfo}
+
+            *⚙️ Configuración*
+            `/project CTA` — Setea proyecto por defecto
+            `/project` — Muestra el proyecto actual
+
             *📋 Proyectos y Sprints*
             `/projects` — Lista todos los proyectos
-            `/sprints CTA` — Sprints del proyecto CTA
+            `/sprints` — Sprints del proyecto
             `/sprint 285` — Issues del sprint 285
 
             *🔍 Tickets*
@@ -117,27 +156,26 @@ public class TelegramBotService : BackgroundService
             `/epic CTA\-355` — Todos los hijos de una épica
 
             *📊 Sprint Activo*
-            `/status CTA` — Resumen: velocidad, carry\-over, alertas
-            `/velocity CTA` — SP completados por persona
-            `/burndown CTA` — Progreso diario del sprint
+            `/status` — Resumen: velocidad, carry\-over, alertas
+            `/velocity` — SP completados por persona
+            `/burndown` — Progreso diario del sprint
 
             *🆕 Actividad*
-            `/recent CTA` — Issues creados en los últimos 7 días
+            `/recent` — Issues creados en los últimos 7 días
 
             *🚀 Release*
-            `/release CTA` — Auditoría del release actual
+            `/release` — Auditoría del release actual
 
             *💡 Discovery*
-            `/ideas CTA` — Ideas en Ahora y Siguiente
+            `/ideas` — Ideas en Ahora y Siguiente
 
             *🤖 Análisis IA*
             `/analyze PC\-255` — Análisis inteligente de una idea o issue
 
             *🔔 Alertas*
-            `/alerts CTA` — Chequeo de alertas ahora
+            `/alerts` — Chequeo de alertas ahora
 
             _Tu chat ID: `{chatId}`_
-            _Reemplazá CTA por la key de tu proyecto_
             """;
     }
 
