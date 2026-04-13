@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text;
+using System.Text.Json;
 using ApiJiraTools.Configuration;
 using ApiJiraTools.Models;
 using Microsoft.Extensions.Options;
@@ -18,6 +19,8 @@ public class TelegramBotService : BackgroundService
     private readonly string _jiraBaseUrl;
     private readonly string _discoveryMapping;
     private static readonly ConcurrentDictionary<long, string> _defaultProject = new();
+    private const string DefaultProjectFile = "data/default_projects.json";
+    private static readonly object _fileLock = new();
 
     public TelegramBotService(
         IServiceProvider services,
@@ -30,6 +33,8 @@ public class TelegramBotService : BackgroundService
         _botToken = options.Value.BotToken;
         _jiraBaseUrl = jiraOptions.Value.BaseUrl.TrimEnd('/');
         _discoveryMapping = options.Value.DiscoveryProjectMapping;
+
+        LoadDefaultProjects();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -131,6 +136,7 @@ public class TelegramBotService : BackgroundService
 
         var pk = arg.ToUpperInvariant();
         _defaultProject[chatId] = pk;
+        SaveDefaultProjects();
         return $"✅ Proyecto por defecto: *{EscapeMd(pk)}*\nTodos los comandos usarán este proyecto si no especificás otro\\.";
     }
 
@@ -1221,6 +1227,45 @@ public class TelegramBotService : BackgroundService
         // In MarkdownV2 links: [text](url) — escape only inside text, URL needs ) and \ escaped
         var escapedUrl = url.Replace("\\", "\\\\").Replace(")", "\\)");
         return $"[{EscapeMd(issueKey)}]({escapedUrl})";
+    }
+
+    private void LoadDefaultProjects()
+    {
+        try
+        {
+            if (!File.Exists(DefaultProjectFile)) return;
+            var json = File.ReadAllText(DefaultProjectFile);
+            var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+            if (dict == null) return;
+            foreach (var kv in dict)
+            {
+                if (long.TryParse(kv.Key, out var chatId))
+                    _defaultProject[chatId] = kv.Value;
+            }
+            _logger.LogInformation("Cargados {Count} proyectos por defecto desde {File}", dict.Count, DefaultProjectFile);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "No se pudo cargar {File}", DefaultProjectFile);
+        }
+    }
+
+    private static void SaveDefaultProjects()
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(DefaultProjectFile);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            var dict = _defaultProject.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value);
+            var json = JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true });
+            lock (_fileLock)
+            {
+                File.WriteAllText(DefaultProjectFile, json);
+            }
+        }
+        catch { /* no bloquear el bot por error de persistencia */ }
     }
 
     private static string EscapeMd(string text)
