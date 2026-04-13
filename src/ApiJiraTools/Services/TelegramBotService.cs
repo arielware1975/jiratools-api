@@ -93,6 +93,7 @@ public class TelegramBotService : BackgroundService
                 "/epic" => await HandleEpic(arg, ct),             // recibe issue key
                 "/release" => await HandleRelease(projectArg, ct),
                 "/analyze" => await HandleAnalyze(arg, chatId, bot, ct), // recibe issue key
+                "/review" => await HandleReview(arg, chatId, bot, ct),  // recibe issue key
                 "/ideas" => await HandleIdeas(projectArg, ct),
                 _ => null
             };
@@ -174,6 +175,7 @@ public class TelegramBotService : BackgroundService
 
             *🤖 Análisis IA*
             `/analyze PC\-255` — Análisis inteligente de una idea o issue
+            `/review PC\-255` — Revisar formato de idea \(estándar Finket\)
 
             *🔔 Alertas*
             `/alerts` — Chequeo de alertas ahora
@@ -674,6 +676,100 @@ public class TelegramBotService : BackgroundService
         var linkedResult = FormatGeminiOutput(result);
         await SendLongMessage(bot, chatId, linkedResult, ct);
         return null; // ya mandamos la respuesta directamente
+    }
+
+    private async Task<string?> HandleReview(string? issueKey, long chatId, ITelegramBotClient bot, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(issueKey))
+        {
+            await bot.SendMessage(chatId, "Uso: `/review PC\\-255`\nRevisa el formato de una idea contra el estándar Finket\\.", parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+            return null;
+        }
+
+        await bot.SendMessage(chatId, $"📝 Revisando formato de `{EscapeMd(issueKey.ToUpperInvariant())}`\\.\\.\\.", parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+
+        using var scope = _services.CreateScope();
+        var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
+        var gemini = scope.ServiceProvider.GetRequiredService<GeminiService>();
+
+        var issue = await jira.GetIssueByKeyAsync(issueKey.ToUpperInvariant());
+        var description = issue.Fields?.GetDescriptionText() ?? "";
+        var summary = issue.Fields?.Summary ?? "";
+
+        if (string.IsNullOrWhiteSpace(description))
+        {
+            await bot.SendMessage(chatId, "⚠️ La idea no tiene descripción\\. No se puede revisar\\.", parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+            return null;
+        }
+
+        var prompt = BuildReviewPrompt(issueKey.ToUpperInvariant(), summary, description);
+        var result = await gemini.GenerateAsync(prompt);
+
+        var formatted = FormatGeminiOutput(result);
+        await SendLongMessage(bot, chatId, formatted, ct);
+        return null;
+    }
+
+    private static string BuildReviewPrompt(string key, string summary, string description)
+    {
+        return $"""
+        Sos un analista de producto senior. Revisá esta idea de Jira contra el estándar de formato de ideas Finket.
+
+        ## Idea: {key} — {summary}
+
+        ### Descripción actual:
+        {description}
+
+        ## Estándar de formato Finket
+
+        Cada idea DEBE tener estas 5 secciones:
+
+        **1. Problema** (máx 5 líneas)
+        - ¿Qué está pasando hoy y por qué es un problema?
+        - Incluir impacto (negocio / operación / riesgo)
+
+        **2. Solución** (máx 3 líneas)
+        - ¿Qué queremos lograr o construir?
+        - Sin detalles técnicos
+
+        **3. ¿Qué vamos a necesitar hacer?** (4-6 puntos máx)
+        - Bloques de trabajo conceptuales (NO tareas)
+        - Ejemplos: recepción de solicitudes, validaciones de negocio, integración con sistema externo
+        - Si hay más de 6 puntos → está mal (nivel épica)
+        - Subpuntos solo para reglas importantes (ej: "1.a considerar ventana de 30 días")
+        - NO incluir: endpoints, tokens, APIs, tablas, código, implementación
+
+        **4. Factibilidad** (máx 5 líneas)
+        - Nivel: Alta / Media / Baja
+        - Justificación breve
+        - Riesgos si aplica
+
+        **5. Recursos**
+        - Links a PRD/spec, Loom, Design files
+
+        ## Reglas clave
+        - La idea debe leerse en 30-60 segundos
+        - Debe permitir estimación preliminar
+        - Describir QUÉ construir, no CÓMO
+        - Si un dev puede discutirlo en detalle técnico → no va en la idea
+        - Idea = qué construir | Épica = cómo hacerlo | Task = cómo se implementa
+
+        ## Tu respuesta debe tener:
+
+        **1. Checklist** (✅ cumple / ❌ no cumple):
+        - [ ] ¿Se entiende en menos de 1 minuto?
+        - [ ] ¿Tiene las 5 secciones?
+        - [ ] ¿Máximo 6 puntos en "qué hacer"?
+        - [ ] ¿Sin detalle técnico?
+        - [ ] ¿Agrupado y no fragmentado?
+        - [ ] ¿Se puede estimar con esto?
+
+        **2. Observaciones**: qué falta, qué sobra, qué está en nivel incorrecto (debería ir en épica/task)
+
+        **3. Texto propuesto**: La idea completa reescrita en el formato correcto. Poné el texto listo para copiar y pegar en Jira. Usá la info existente de la descripción y completá lo que falte con sugerencias razonables marcadas con [COMPLETAR].
+
+        Respondé en español. Sé directo y concreto.
+        """;
     }
 
     private async Task<string> HandleAlerts(string? projectKey, CancellationToken ct)
