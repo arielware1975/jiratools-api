@@ -56,8 +56,17 @@ public class GeminiService
 
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogError("Error Gemini. HTTP {StatusCode}: {Response}", (int)response.StatusCode, responseText);
-            return $"Error al llamar a Gemini: HTTP {(int)response.StatusCode}";
+            _logger.LogError("Error Gemini. HTTP {StatusCode}: {Response}", (int)response.StatusCode, responseText.Length > 500 ? responseText[..500] : responseText);
+            // Extraer mensaje de error de la respuesta JSON si es posible
+            var errorMsg = $"HTTP {(int)response.StatusCode}";
+            try
+            {
+                using var errDoc = JsonDocument.Parse(responseText);
+                if (errDoc.RootElement.TryGetProperty("error", out var errProp) && errProp.TryGetProperty("message", out var msgProp))
+                    errorMsg += $": {msgProp.GetString()}";
+            }
+            catch { /* ignore parse errors */ }
+            return $"Error al llamar a Gemini: {errorMsg}";
         }
 
         // Extraer texto de la respuesta

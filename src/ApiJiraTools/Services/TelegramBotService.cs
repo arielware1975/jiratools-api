@@ -702,6 +702,10 @@ public class TelegramBotService : BackgroundService
             return null;
         }
 
+        // Truncar descripción si es muy larga para no exceder límites de Gemini
+        if (description.Length > 6000)
+            description = description[..6000] + "\n\n[... descripción truncada ...]";
+
         var prompt = BuildReviewPrompt(issueKey.ToUpperInvariant(), summary, description);
         var result = await gemini.GenerateAsync(prompt);
 
