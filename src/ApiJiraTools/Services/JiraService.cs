@@ -342,11 +342,20 @@ public class JiraService
 
         string jql = $"project = {projectKey} ORDER BY Rank ASC";
         var fields = BuildStandardIssueFields();
-        // Agregar campos de discovery: roadmap + fecha objetivo
+        // Agregar todos los campos de discovery (roadmap, fecha objetivo, etc.)
         AddIfNotExists(fields, "customfield_10852");
         AddIfNotExists(fields, "customfield_10204");
-        AddIfNotExists(fields, "customfield_10210"); // Objetivo del proyecto
-        AddIfNotExists(fields, "customfield_10078"); // Objetivo (alt)
+        AddIfNotExists(fields, "customfield_10210");
+        AddIfNotExists(fields, "customfield_10078");
+        // Agregar campos dinámicos del fieldMap si están disponibles
+        try
+        {
+            var fieldDefs = await GetFieldsAsync();
+            var map = BuildDiscoveryFieldMap(fieldDefs);
+            foreach (var fid in map.AllConfiguredFieldIds)
+                AddIfNotExists(fields, fid);
+        }
+        catch { /* fallback a hardcoded */ }
         var request = new JiraJqlSearchRequest { Jql = jql, MaxResults = maxResults, Fields = fields };
         var issues = await SearchIssuesAllPagesAsync(request);
 
@@ -364,6 +373,67 @@ public class JiraService
             return ideas;
 
         return ideas.Where(i => MatchesRoadmapFilter(GetRoadmapValue(i, fieldMap), roadmapValue)).ToList();
+    }
+
+    public string GetDiscoveryTargetDate(JiraIssue issue, JiraDiscoveryFieldMap? fieldMap = null)
+    {
+        if (issue?.Fields == null) return string.Empty;
+
+        // "Objetivo del proyecto" es un date range: {"start":"YYYY-MM-DD","end":"YYYY-MM-DD"}
+        // Preferir "end" (fecha objetivo), luego "start"
+        var fieldIds = new List<string>();
+        if (fieldMap != null)
+        {
+            if (!string.IsNullOrWhiteSpace(fieldMap.ProjectTargetFieldId)) fieldIds.Add(fieldMap.ProjectTargetFieldId);
+            if (!string.IsNullOrWhiteSpace(fieldMap.ProjectTargetFieldIdAlt)) fieldIds.Add(fieldMap.ProjectTargetFieldIdAlt);
+        }
+        fieldIds.Add("customfield_10210");
+        fieldIds.Add("customfield_10078");
+
+        foreach (var fid in fieldIds.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var dt = ExtractEndDateFromRawField(issue, fid);
+            if (dt.HasValue) return dt.Value.ToString("yyyy-MM-dd");
+        }
+
+        // Fallback: duedate
+        return issue.Fields.DueDate ?? string.Empty;
+    }
+
+    private static DateTime? ExtractEndDateFromRawField(JiraIssue issue, string fieldId)
+    {
+        var raw = issue.Fields?.GetCustomFieldRaw(fieldId);
+        if (raw == null) return null;
+
+        var element = raw.Value;
+
+        // Caso 1: objeto JSON (interval) → leer "end" luego "start"
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            if (element.TryGetProperty("end", out var endProp))
+            {
+                var endStr = endProp.ValueKind == JsonValueKind.String ? endProp.GetString() : endProp.ToString();
+                if (!string.IsNullOrWhiteSpace(endStr) && DateTime.TryParse(endStr, out var dtEnd))
+                    return dtEnd;
+            }
+            if (element.TryGetProperty("start", out var startProp))
+            {
+                var startStr = startProp.ValueKind == JsonValueKind.String ? startProp.GetString() : startProp.ToString();
+                if (!string.IsNullOrWhiteSpace(startStr) && DateTime.TryParse(startStr, out var dtStart))
+                    return dtStart;
+            }
+            return null;
+        }
+
+        // Caso 2: string (fecha plana "2026-04-14")
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            var str = element.GetString();
+            if (!string.IsNullOrWhiteSpace(str) && DateTime.TryParse(str, out var dt))
+                return dt;
+        }
+
+        return null;
     }
 
     public string GetDiscoveryRoadmapValue(JiraIssue issue)
