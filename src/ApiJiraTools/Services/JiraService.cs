@@ -341,7 +341,11 @@ public class JiraService
         ArgumentException.ThrowIfNullOrWhiteSpace(projectKey);
 
         string jql = $"project = {projectKey} ORDER BY Rank ASC";
-        var request = new JiraJqlSearchRequest { Jql = jql, MaxResults = maxResults, Fields = BuildStandardIssueFields() };
+        var fields = BuildStandardIssueFields();
+        // Agregar campos de roadmap para discovery
+        AddIfNotExists(fields, "customfield_10852");
+        AddIfNotExists(fields, "customfield_10204");
+        var request = new JiraJqlSearchRequest { Jql = jql, MaxResults = maxResults, Fields = fields };
         var issues = await SearchIssuesAllPagesAsync(request);
 
         return issues

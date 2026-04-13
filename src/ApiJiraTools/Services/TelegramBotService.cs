@@ -356,45 +356,21 @@ public class TelegramBotService : BackgroundService
         var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
 
         var discoveryProject = ResolveDiscoveryProject(projectKey.ToUpperInvariant(), _discoveryMapping);
-        var ideas = await jira.GetDiscoveryIdeasAsync(discoveryProject);
 
-        if (ideas.Count == 0)
-            return $"No se encontraron ideas en el proyecto *{EscapeMd(discoveryProject)}*\\.";
+        // Traer ideas de Ahora y Siguiente usando el fieldMap dinámico
+        var ideasAhora = await jira.GetDiscoveryIdeasByRoadmapAsync(discoveryProject, "Ahora");
+        var ideasSiguiente = await jira.GetDiscoveryIdeasByRoadmapAsync(discoveryProject, "Siguiente");
+
+        if (ideasAhora.Count == 0 && ideasSiguiente.Count == 0)
+            return $"No hay ideas en *Ahora* ni *Siguiente* en *{EscapeMd(discoveryProject)}*\\.";
 
         var sb = new StringBuilder();
         sb.AppendLine($"*💡 Ideas \\- {EscapeMd(discoveryProject)}*\n");
 
-        var grouped = new Dictionary<string, List<JiraIssue>>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var idea in ideas)
+        void AppendBucket(string label, string emoji, List<JiraIssue> list)
         {
-            var roadmap = jira.GetDiscoveryRoadmapValue(idea);
-            if (string.IsNullOrWhiteSpace(roadmap)) roadmap = "Sin roadmap";
-
-            // Solo mostrar Ahora y Siguiente
-            bool isAhora = roadmap.Contains("Ahora", StringComparison.OrdinalIgnoreCase)
-                        || roadmap.Contains("Now", StringComparison.OrdinalIgnoreCase);
-            bool isSiguiente = roadmap.Contains("Siguiente", StringComparison.OrdinalIgnoreCase)
-                            || roadmap.Contains("Next", StringComparison.OrdinalIgnoreCase);
-
-            if (!isAhora && !isSiguiente) continue;
-
-            var label = isAhora ? "Ahora" : "Siguiente";
-            if (!grouped.ContainsKey(label))
-                grouped[label] = new List<JiraIssue>();
-            grouped[label].Add(idea);
-        }
-
-        if (grouped.Count == 0)
-            return $"No hay ideas en *Ahora* ni *Siguiente* en *{EscapeMd(discoveryProject)}*\\.";
-
-        foreach (var bucket in new[] { "Ahora", "Siguiente" })
-        {
-            if (!grouped.TryGetValue(bucket, out var list)) continue;
-
-            var emoji = bucket == "Ahora" ? "🔴" : "🟡";
-            sb.AppendLine($"*{emoji} {EscapeMd(bucket)}* \\({list.Count}\\)");
-
+            if (list.Count == 0) return;
+            sb.AppendLine($"*{emoji} {EscapeMd(label)}* \\({list.Count}\\)");
             foreach (var idea in list)
             {
                 var status = idea.Fields?.Status?.Name ?? "";
@@ -404,6 +380,9 @@ public class TelegramBotService : BackgroundService
             }
             sb.AppendLine();
         }
+
+        AppendBucket("Ahora", "🔴", ideasAhora);
+        AppendBucket("Siguiente", "🟡", ideasSiguiente);
 
         return sb.ToString();
     }
