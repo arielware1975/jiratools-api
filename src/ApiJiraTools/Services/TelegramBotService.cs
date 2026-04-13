@@ -417,7 +417,7 @@ public class TelegramBotService : BackgroundService
 
         if (string.IsNullOrWhiteSpace(projectKey))
         {
-            await bot.SendMessage(chatId, NeedProjectMsg("/resumen"), parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+            await bot.SendMessage(chatId, "Primero seteá el proyecto con `/project CTA` y después usá `/resumen debin`", parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
             return null;
         }
 
