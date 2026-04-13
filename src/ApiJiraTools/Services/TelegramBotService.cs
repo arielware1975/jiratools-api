@@ -419,6 +419,10 @@ public class TelegramBotService : BackgroundService
         foreach (var info in await Task.WhenAll(epicTasks))
             epicInfoMap[info.Key] = info;
 
+        // Obtener fieldMap para fecha objetivo del custom field de la idea
+        var fieldDefs = await jira.GetFieldsAsync();
+        var fieldMap = jira.BuildDiscoveryFieldMap(fieldDefs);
+
         // Construir info por idea (agregar datos de todas sus épicas)
         var ideaInfoMap = new Dictionary<string, IdeaInfo>(StringComparer.OrdinalIgnoreCase);
         foreach (var idea in allIdeas)
@@ -428,7 +432,12 @@ public class TelegramBotService : BackgroundService
                 .Where(ek => ek.StartsWith(pk + "-", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
+            // Prioridad 1: custom field "Objetivo del proyecto" de la idea
             DateTime? bestDate = null;
+            var ideaTarget = jira.GetDiscoveryTargetDate(idea, fieldMap);
+            if (!string.IsNullOrWhiteSpace(ideaTarget) && DateTime.TryParse(ideaTarget, out var ideaDt))
+                bestDate = ideaDt;
+
             int totalIssues = 0, done = 0, inProg = 0, toDo = 0;
             bool hasMissingDate = false;
             bool hasOverdueDate = false;
@@ -437,6 +446,7 @@ public class TelegramBotService : BackgroundService
             {
                 if (!epicInfoMap.TryGetValue(ek, out var ei)) continue;
 
+                // Prioridad 2: DueDate de la épica (solo si no hay fecha de la idea)
                 if (ei.TargetDate.HasValue)
                 {
                     if (!bestDate.HasValue || ei.TargetDate.Value > bestDate.Value)
@@ -452,6 +462,10 @@ public class TelegramBotService : BackgroundService
                 inProg += ei.InProgress;
                 toDo += ei.ToDo;
             }
+
+            // Si la fecha viene del custom field de la idea, verificar si está vencida
+            if (bestDate.HasValue && bestDate.Value.Date < DateTime.Today)
+                hasOverdueDate = true;
 
             // Determinar icono de control
             string icon;
