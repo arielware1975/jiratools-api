@@ -521,6 +521,9 @@ public class TelegramBotService : BackgroundService
         AppendBucket("Ahora", "🔴", ideasAhora);
         AppendBucket("Siguiente", "🟡", ideasSiguiente);
 
+        sb.AppendLine("_Leyenda: ✅ Done \\| ⚠️ Sin fecha o vencida \\| 🔵 En curso \\| ⬜ Sin avance \\| ❓ Sin épica_");
+        sb.AppendLine("_🎯 Fecha target \\| done/total issues_");
+
         return sb.ToString();
     }
 
