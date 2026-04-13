@@ -370,7 +370,9 @@ public class TelegramBotService : BackgroundService
         var result = await analyze.AnalyzeIssueAsync(issueKey.ToUpperInvariant());
 
         // Partir en chunks de 4000 chars (Telegram limit = 4096)
-        await SendLongMessage(bot, chatId, result, ct);
+        // Post-procesar: convertir issue keys en links clickeables
+        var linkedResult = LinkifyIssueKeys(result);
+        await SendLongMessage(bot, chatId, linkedResult, ct);
         return null; // ya mandamos la respuesta directamente
     }
 
@@ -615,29 +617,38 @@ public class TelegramBotService : BackgroundService
         return sb.ToString();
     }
 
-    private static async Task SendLongMessage(ITelegramBotClient bot, long chatId, string text, CancellationToken ct)
+    /// <summary>Replaces issue keys (e.g. CTA-123, PC-255) with clickable HTML links.</summary>
+    private string LinkifyIssueKeys(string text)
+    {
+        // Match patterns like CTA-123, PC-255, EC-42, NAT-100, etc.
+        return System.Text.RegularExpressions.Regex.Replace(
+            text,
+            @"\b([A-Z]{2,6}-\d+)\b",
+            m => $"<a href=\"{_jiraBaseUrl}/browse/{m.Value}\">{m.Value}</a>");
+    }
+
+    private static async Task SendLongMessage(ITelegramBotClient bot, long chatId, string text, CancellationToken ct, ParseMode parseMode = ParseMode.Html)
     {
         const int maxLen = 4000;
         if (text.Length <= maxLen)
         {
-            await bot.SendMessage(chatId, text, cancellationToken: ct);
+            await bot.SendMessage(chatId, text, parseMode: parseMode, cancellationToken: ct);
             return;
         }
 
-        // Partir por líneas para no cortar a mitad de frase
         var lines = text.Split('\n');
         var chunk = new StringBuilder();
         foreach (var line in lines)
         {
             if (chunk.Length + line.Length + 1 > maxLen)
             {
-                await bot.SendMessage(chatId, chunk.ToString(), cancellationToken: ct);
+                await bot.SendMessage(chatId, chunk.ToString(), parseMode: parseMode, cancellationToken: ct);
                 chunk.Clear();
             }
             chunk.AppendLine(line);
         }
         if (chunk.Length > 0)
-            await bot.SendMessage(chatId, chunk.ToString(), cancellationToken: ct);
+            await bot.SendMessage(chatId, chunk.ToString(), parseMode: parseMode, cancellationToken: ct);
     }
 
     /// <summary>Creates a clickable Jira link in MarkdownV2 format.</summary>
