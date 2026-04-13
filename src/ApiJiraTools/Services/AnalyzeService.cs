@@ -25,17 +25,32 @@ public class AnalyzeService
         // 1. Armar el árbol de contexto
         var report = await _tree.BuildAsync(issueKey);
 
-        // 2. Construir el prompt con toda la info
-        var context = BuildContext(report);
+        // 2. Cargar descriptions del issue principal y la épica
+        var issueDetail = await _jira.GetIssueByKeyAsync(issueKey);
+        string? issueDescription = issueDetail.Fields?.GetDescriptionText();
+
+        string? epicDescription = null;
+        if (!string.IsNullOrEmpty(report.EpicKey))
+        {
+            try
+            {
+                var epicDetail = await _jira.GetIssueByKeyAsync(report.EpicKey);
+                epicDescription = epicDetail.Fields?.GetDescriptionText();
+            }
+            catch { /* ignore */ }
+        }
+
+        // 3. Construir el prompt con toda la info
+        var context = BuildContext(report, issueDescription, epicDescription, issueDetail.Fields?.Attachments);
         var prompt = BuildPrompt(context);
 
-        // 3. Llamar a Gemini
+        // 4. Llamar a Gemini
         var analysis = await _gemini.GenerateAsync(prompt);
 
         return analysis;
     }
 
-    private string BuildContext(IssueTreeReport report)
+    private string BuildContext(IssueTreeReport report, string? issueDescription = null, string? epicDescription = null, List<JiraAttachment>? attachments = null)
     {
         var sb = new StringBuilder();
 
@@ -54,6 +69,11 @@ public class AnalyzeService
         {
             sb.AppendLine($"ÉPICA: {report.EpicKey} - {report.EpicSummary}");
             sb.AppendLine($"  Estado: {report.EpicStatus}");
+            if (!string.IsNullOrWhiteSpace(epicDescription))
+            {
+                var desc = epicDescription.Length > 1000 ? epicDescription[..1000] + "..." : epicDescription;
+                sb.AppendLine($"  Descripción: {desc}");
+            }
             sb.AppendLine();
         }
 
@@ -68,6 +88,17 @@ public class AnalyzeService
             sb.AppendLine($"  Sprint: {report.IssueSprint}");
         if (report.IssueLabels.Count > 0)
             sb.AppendLine($"  Labels: {string.Join(", ", report.IssueLabels)}");
+        if (!string.IsNullOrWhiteSpace(issueDescription))
+        {
+            var desc = issueDescription.Length > 1500 ? issueDescription[..1500] + "..." : issueDescription;
+            sb.AppendLine($"  Descripción: {desc}");
+        }
+        if (attachments != null && attachments.Count > 0)
+        {
+            sb.AppendLine($"  Adjuntos ({attachments.Count}):");
+            foreach (var att in attachments.Take(10))
+                sb.AppendLine($"    - {att.Filename} ({att.MimeType})");
+        }
         sb.AppendLine();
 
         // Hijos

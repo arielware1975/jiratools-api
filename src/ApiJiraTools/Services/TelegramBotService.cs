@@ -369,8 +369,8 @@ public class TelegramBotService : BackgroundService
 
         var result = await analyze.AnalyzeIssueAsync(issueKey.ToUpperInvariant());
 
-        // Gemini devuelve texto plano, lo mandamos sin MarkdownV2 para evitar problemas de escape
-        await bot.SendMessage(chatId, result, cancellationToken: ct);
+        // Partir en chunks de 4000 chars (Telegram limit = 4096)
+        await SendLongMessage(bot, chatId, result, ct);
         return null; // ya mandamos la respuesta directamente
     }
 
@@ -613,6 +613,31 @@ public class TelegramBotService : BackgroundService
         sb.AppendLine($"\n*SP:* {EscapeMd($"{doneSp}/{totalSp}")} completados");
 
         return sb.ToString();
+    }
+
+    private static async Task SendLongMessage(ITelegramBotClient bot, long chatId, string text, CancellationToken ct)
+    {
+        const int maxLen = 4000;
+        if (text.Length <= maxLen)
+        {
+            await bot.SendMessage(chatId, text, cancellationToken: ct);
+            return;
+        }
+
+        // Partir por líneas para no cortar a mitad de frase
+        var lines = text.Split('\n');
+        var chunk = new StringBuilder();
+        foreach (var line in lines)
+        {
+            if (chunk.Length + line.Length + 1 > maxLen)
+            {
+                await bot.SendMessage(chatId, chunk.ToString(), cancellationToken: ct);
+                chunk.Clear();
+            }
+            chunk.AppendLine(line);
+        }
+        if (chunk.Length > 0)
+            await bot.SendMessage(chatId, chunk.ToString(), cancellationToken: ct);
     }
 
     /// <summary>Creates a clickable Jira link in MarkdownV2 format.</summary>
