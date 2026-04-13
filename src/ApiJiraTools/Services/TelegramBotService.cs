@@ -371,7 +371,7 @@ public class TelegramBotService : BackgroundService
 
         // Partir en chunks de 4000 chars (Telegram limit = 4096)
         // Post-procesar: convertir issue keys en links clickeables
-        var linkedResult = LinkifyIssueKeys(result);
+        var linkedResult = FormatGeminiOutput(result);
         await SendLongMessage(bot, chatId, linkedResult, ct);
         return null; // ya mandamos la respuesta directamente
     }
@@ -617,14 +617,22 @@ public class TelegramBotService : BackgroundService
         return sb.ToString();
     }
 
-    /// <summary>Replaces issue keys (e.g. CTA-123, PC-255) with clickable HTML links.</summary>
-    private string LinkifyIssueKeys(string text)
+    /// <summary>Converts Gemini markdown output to Telegram HTML with clickable issue links.</summary>
+    private string FormatGeminiOutput(string text)
     {
-        // Match patterns like CTA-123, PC-255, EC-42, NAT-100, etc.
-        return System.Text.RegularExpressions.Regex.Replace(
+        // Convert **bold** to <b>bold</b>
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\*\*(.+?)\*\*", "<b>$1</b>");
+
+        // Convert *italic* to <i>italic</i>
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"(?<![<])\*(.+?)\*", "<i>$1</i>");
+
+        // Replace issue keys (CTA-123, PC-255) with clickable links
+        text = System.Text.RegularExpressions.Regex.Replace(
             text,
             @"\b([A-Z]{2,6}-\d+)\b",
             m => $"<a href=\"{_jiraBaseUrl}/browse/{m.Value}\">{m.Value}</a>");
+
+        return text;
     }
 
     private static async Task SendLongMessage(ITelegramBotClient bot, long chatId, string text, CancellationToken ct, ParseMode parseMode = ParseMode.Html)
