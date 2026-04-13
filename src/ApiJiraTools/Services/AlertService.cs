@@ -1,15 +1,20 @@
 using System.Text;
+using System.Text.RegularExpressions;
+using ApiJiraTools.Configuration;
 using ApiJiraTools.Models;
+using Microsoft.Extensions.Options;
 
 namespace ApiJiraTools.Services;
 
 public sealed class AlertService
 {
     private readonly JiraService _jira;
+    private readonly string _discoveryMapping;
 
-    public AlertService(JiraService jira)
+    public AlertService(JiraService jira, IOptions<TelegramSettings> telegramOptions)
     {
         _jira = jira;
+        _discoveryMapping = telegramOptions.Value.DiscoveryProjectMapping;
     }
 
     public async Task<string?> BuildDailyAlertAsync(string projectKey)
@@ -65,7 +70,18 @@ public sealed class AlertService
         if (noSp.Count > 0)
             alerts.Add($"📊 *{noSp.Count} issue{(noSp.Count > 1 ? "s" : "")} sin story points*");
 
-        // 5. Velocidad actual
+        // 5. Naming mismatch idea ↔ épica
+        var namingAlerts = await CheckNamingMismatchAsync(projectKey);
+        if (namingAlerts.Count > 0)
+        {
+            alerts.Add($"📛 *{namingAlerts.Count} nombre{(namingAlerts.Count > 1 ? "s" : "")} idea ≠ épica:*");
+            foreach (var nm in namingAlerts.Take(5))
+                alerts.Add($"   `{nm.IdeaKey}` _{Truncate(nm.IdeaName, 25)}_ → `{nm.EpicKey}` _{Truncate(nm.EpicName, 25)}_");
+            if (namingAlerts.Count > 5)
+                alerts.Add($"   _y {namingAlerts.Count - 5} más_");
+        }
+
+        // 6. Velocidad actual
         var doneSp = workIssues.Where(IsDone).Sum(GetSp);
         var totalSp = workIssues.Sum(GetSp);
         double pct = totalSp > 0 ? doneSp / totalSp * 100 : 0;
@@ -134,6 +150,94 @@ public sealed class AlertService
 
     private static string Truncate(string text, int max)
         => text.Length <= max ? text : text[..max] + "...";
+
+    private async Task<List<NamingMismatch>> CheckNamingMismatchAsync(string projectKey)
+    {
+        var result = new List<NamingMismatch>();
+
+        // Resolver proyecto discovery
+        var discoveryProject = ResolveDiscoveryProject(projectKey, _discoveryMapping);
+        if (string.Equals(discoveryProject, projectKey, StringComparison.OrdinalIgnoreCase))
+            return result; // No hay mapping de discovery
+
+        try
+        {
+            var ideasAhora = await _jira.GetDiscoveryIdeasByRoadmapAsync(discoveryProject, "Ahora");
+            var ideasSiguiente = await _jira.GetDiscoveryIdeasByRoadmapAsync(discoveryProject, "Siguiente");
+            var allIdeas = new List<JiraIssue>(ideasAhora);
+            foreach (var i in ideasSiguiente)
+                if (!allIdeas.Any(x => x.Key == i.Key))
+                    allIdeas.Add(i);
+
+            foreach (var idea in allIdeas)
+            {
+                var linkedEpics = JiraService.GetLinkedEpicsFromIdea(idea)
+                    .Where(e => e.Key.StartsWith(projectKey + "-", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                foreach (var (epicKey, epicSummary) in linkedEpics)
+                {
+                    if (!NamesMatch(idea.Fields?.Summary ?? "", epicSummary))
+                    {
+                        result.Add(new NamingMismatch
+                        {
+                            IdeaKey = idea.Key,
+                            IdeaName = idea.Fields?.Summary ?? "",
+                            EpicKey = epicKey,
+                            EpicName = epicSummary
+                        });
+                    }
+                }
+            }
+        }
+        catch { /* no bloquear alertas por error en discovery */ }
+
+        return result;
+    }
+
+    private static string ResolveDiscoveryProject(string projectKey, string mapping)
+    {
+        if (string.IsNullOrWhiteSpace(mapping)) return projectKey;
+        foreach (var pair in mapping.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var parts = pair.Split(':', 2);
+            if (parts.Length == 2 && parts[0].Equals(projectKey, StringComparison.OrdinalIgnoreCase))
+                return parts[1].ToUpperInvariant();
+        }
+        return projectKey;
+    }
+
+    private static bool NamesMatch(string ideaName, string epicName)
+    {
+        static string Normalize(string s)
+        {
+            s = Regex.Replace(s.Trim(), @"^[A-Za-z0-9]{1,3}[\)\-\.]\s*", "");
+            s = s.Trim().ToLowerInvariant().Replace('-', ' ').Replace('_', ' ');
+            while (s.Contains("  ")) s = s.Replace("  ", " ");
+            return s;
+        }
+
+        var n1 = Normalize(ideaName);
+        var n2 = Normalize(epicName);
+
+        if (string.IsNullOrWhiteSpace(n1) || string.IsNullOrWhiteSpace(n2)) return true;
+        if (n1 == n2) return true;
+        if (n1.Contains(n2) || n2.Contains(n1)) return true;
+
+        var words1 = n1.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(w => w.Length > 2).ToHashSet();
+        var words2 = n2.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(w => w.Length > 2).ToHashSet();
+        if (words1.Count == 0) return true;
+        int common = words1.Count(w => words2.Contains(w));
+        return (double)common / words1.Count >= 0.5;
+    }
+
+    private record NamingMismatch
+    {
+        public string IdeaKey { get; init; } = "";
+        public string IdeaName { get; init; } = "";
+        public string EpicKey { get; init; } = "";
+        public string EpicName { get; init; } = "";
+    }
 
     private static string EscapeMd(string text)
     {

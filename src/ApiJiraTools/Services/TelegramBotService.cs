@@ -406,6 +406,7 @@ public class TelegramBotService : BackgroundService
                 return new EpicInfo
                 {
                     Key = ek,
+                    Summary = epic.Fields?.Summary ?? "",
                     TargetDate = dt,
                     TotalIssues = workIssues.Count,
                     Done = done,
@@ -441,10 +442,15 @@ public class TelegramBotService : BackgroundService
             int totalIssues = 0, done = 0, inProg = 0, toDo = 0;
             bool hasMissingDate = false;
             bool hasOverdueDate = false;
+            var nameMismatches = new List<string>();
 
             foreach (var ek in linkedEpicKeys)
             {
                 if (!epicInfoMap.TryGetValue(ek, out var ei)) continue;
+
+                // Verificar nombre idea vs épica
+                if (!NamesMatch(idea.Fields?.Summary ?? "", ei.Summary))
+                    nameMismatches.Add($"{ek}: {ei.Summary}");
 
                 // Prioridad 2: DueDate de la épica (solo si no hay fecha de la idea)
                 if (ei.TargetDate.HasValue)
@@ -488,7 +494,8 @@ public class TelegramBotService : BackgroundService
                 InProgress = inProg,
                 ToDo = toDo,
                 Icon = icon,
-                EpicCount = linkedEpicKeys.Count
+                EpicCount = linkedEpicKeys.Count,
+                NameMismatches = nameMismatches
             };
         }
 
@@ -514,6 +521,12 @@ public class TelegramBotService : BackgroundService
 
                 sb.AppendLine($"{icon} {LinkMd(idea.Key)} \\| {EscapeMd(status)}{targetText}{progressText}");
                 sb.AppendLine($"    {EscapeMd(idea.Fields?.Summary ?? "")}");
+
+                if (info?.NameMismatches?.Count > 0)
+                {
+                    foreach (var mm in info.NameMismatches)
+                        sb.AppendLine($"    📛 _{EscapeMd(mm)}_");
+                }
             }
             sb.AppendLine();
         }
@@ -522,14 +535,52 @@ public class TelegramBotService : BackgroundService
         AppendBucket("Siguiente", "🟡", ideasSiguiente);
 
         sb.AppendLine("_Leyenda: ✅ Done \\| ⚠️ Sin fecha o vencida \\| 🔵 En curso \\| ⬜ Sin avance \\| ❓ Sin épica_");
-        sb.AppendLine("_🎯 Fecha target \\| done/total issues_");
+        sb.AppendLine("_🎯 Fecha target \\| done/total \\| 📛 Nombre idea ≠ épica_");
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Compara nombre de idea con nombre de épica. Tolera prefijos (A), B), etc.) y normaliza.
+    /// </summary>
+    private static bool NamesMatch(string ideaName, string epicName)
+    {
+        static string Normalize(string s)
+        {
+            // Quitar prefijos tipo "A) ", "B) ", "C) ", "1) ", "A- ", etc.
+            s = System.Text.RegularExpressions.Regex.Replace(s.Trim(), @"^[A-Za-z0-9]{1,3}[\)\-\.]\s*", "");
+            // Quitar caracteres especiales y espacios extra
+            s = s.Trim().ToLowerInvariant();
+            // Normalizar guiones, underscores a espacio
+            s = s.Replace('-', ' ').Replace('_', ' ');
+            while (s.Contains("  ")) s = s.Replace("  ", " ");
+            return s;
+        }
+
+        var n1 = Normalize(ideaName);
+        var n2 = Normalize(epicName);
+
+        if (string.IsNullOrWhiteSpace(n1) || string.IsNullOrWhiteSpace(n2))
+            return true; // no podemos comparar, no alertar
+
+        // Match exacto después de normalizar
+        if (n1 == n2) return true;
+
+        // Uno contiene al otro
+        if (n1.Contains(n2) || n2.Contains(n1)) return true;
+
+        // Palabras significativas en común (>= 50% de las palabras de la idea)
+        var words1 = n1.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(w => w.Length > 2).ToHashSet();
+        var words2 = n2.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(w => w.Length > 2).ToHashSet();
+        if (words1.Count == 0) return true;
+        int common = words1.Count(w => words2.Contains(w));
+        return (double)common / words1.Count >= 0.5;
     }
 
     private record EpicInfo
     {
         public string Key { get; init; } = "";
+        public string Summary { get; init; } = "";
         public DateTime? TargetDate { get; init; }
         public int TotalIssues { get; init; }
         public int Done { get; init; }
@@ -546,6 +597,7 @@ public class TelegramBotService : BackgroundService
         public int ToDo { get; init; }
         public string Icon { get; init; } = "";
         public int EpicCount { get; init; }
+        public List<string> NameMismatches { get; init; } = new();
     }
 
     private static string ResolveDiscoveryProject(string projectKey, string mapping)
