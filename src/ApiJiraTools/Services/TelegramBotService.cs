@@ -107,6 +107,9 @@ public class TelegramBotService : BackgroundService
         }
     }
 
+    private static string NeedProjectMsg(string cmd)
+        => $"Usá `{cmd} CTA` o seteá un proyecto por defecto con `/project CTA`";
+
     private static string? ResolveProjectArg(string? arg, long chatId)
     {
         // Si el usuario pasó argumento, usarlo
@@ -198,7 +201,7 @@ public class TelegramBotService : BackgroundService
     private async Task<string> HandleSprints(string? projectKey, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(projectKey))
-            return "Uso: /sprints CTA";
+            return NeedProjectMsg("/sprints");
 
         using var scope = _services.CreateScope();
         var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
@@ -312,7 +315,7 @@ public class TelegramBotService : BackgroundService
     private async Task<string> HandleRelease(string? projectKey, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(projectKey))
-            return "Uso: /release CTA";
+            return NeedProjectMsg("/release");
 
         using var scope = _services.CreateScope();
         var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
@@ -388,7 +391,7 @@ public class TelegramBotService : BackgroundService
     private async Task<string> HandleIdeas(string? projectKey, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(projectKey))
-            return "Uso: `/ideas CTA`";
+            return NeedProjectMsg("/ideas");
 
         using var scope = _services.CreateScope();
         var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
@@ -676,7 +679,7 @@ public class TelegramBotService : BackgroundService
     private async Task<string> HandleAlerts(string? projectKey, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(projectKey))
-            return "Uso: /alerts CTA";
+            return NeedProjectMsg("/alerts");
 
         using var scope = _services.CreateScope();
         var alertService = scope.ServiceProvider.GetRequiredService<AlertService>();
@@ -696,7 +699,7 @@ public class TelegramBotService : BackgroundService
     private async Task<string> HandleStatus(string? projectKey, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(projectKey))
-            return "Uso: /status CTA";
+            return NeedProjectMsg("/status");
 
         using var scope = _services.CreateScope();
         var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
@@ -731,7 +734,7 @@ public class TelegramBotService : BackgroundService
     private async Task<string> HandleVelocity(string? projectKey, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(projectKey))
-            return "Uso: /velocity CTA";
+            return NeedProjectMsg("/velocity");
 
         using var scope = _services.CreateScope();
         var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
@@ -754,7 +757,7 @@ public class TelegramBotService : BackgroundService
     private async Task<string> HandleBurndown(string? projectKey, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(projectKey))
-            return "Uso: /burndown CTA";
+            return NeedProjectMsg("/burndown");
 
         using var scope = _services.CreateScope();
         var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
@@ -857,7 +860,7 @@ public class TelegramBotService : BackgroundService
     private async Task<string> HandleRecent(string? projectKey, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(projectKey))
-            return "Uso: /recent CTA";
+            return NeedProjectMsg("/recent");
 
         using var scope = _services.CreateScope();
         var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
