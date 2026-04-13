@@ -520,12 +520,15 @@ public class TelegramBotService : BackgroundService
         var risks = new List<string>();
         DateTime? earliestDate = null, latestDate = null;
 
-        // Datos para el prompt de Gemini
+        // Datos para los prompts de Gemini
         var geminiData = new StringBuilder();
         geminiData.AppendLine($"TEMA: {keyword.ToUpperInvariant()}");
         geminiData.AppendLine($"PROYECTO: {pk}");
         geminiData.AppendLine($"FECHA HOY: {DateTime.Today:dd/MM/yyyy}");
         geminiData.AppendLine();
+
+        // Descripciones de las ideas para generar brief funcional
+        var ideaDescriptions = new StringBuilder();
 
         foreach (var idea in matchedIdeas)
         {
@@ -601,6 +604,15 @@ public class TelegramBotService : BackgroundService
             if (epicSummaries.Count > 0)
                 geminiData.AppendLine($"  Épicas: {string.Join("; ", epicSummaries)}");
             geminiData.AppendLine();
+
+            // Recolectar descripción para brief funcional
+            var ideaDesc = idea.Fields?.GetDescriptionText() ?? "";
+            if (!string.IsNullOrWhiteSpace(ideaDesc))
+            {
+                ideaDescriptions.AppendLine($"--- IDEA: {idea.Key} — {idea.Fields?.Summary} ---");
+                ideaDescriptions.AppendLine(ideaDesc.Length > 3000 ? ideaDesc[..3000] + "\n[...]" : ideaDesc);
+                ideaDescriptions.AppendLine();
+            }
         }
 
         // Consolidado
@@ -656,6 +668,42 @@ public class TelegramBotService : BackgroundService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Error generando resumen IA para /resumen");
+        }
+
+        // ── Brief funcional de negocio ──
+        if (ideaDescriptions.Length > 0)
+        {
+            try
+            {
+                var briefPrompt = $"""
+                Sos un analista funcional senior. A partir de las descripciones de estas ideas de producto relacionadas entre sí,
+                generá una descripción funcional de negocio unificada del proyecto/tema "{keyword.ToUpperInvariant()}".
+
+                La descripción debe:
+                1. Explicar en 1-2 párrafos QUÉ es el proyecto y QUÉ problema de negocio resuelve
+                2. Describir brevemente las funcionalidades principales (no listar ideas, sino capacidades de negocio)
+                3. Mencionar integraciones con otros sistemas si las hay
+                4. Identificar el valor de negocio / beneficio para el usuario final
+                5. Ser comprensible para alguien NO técnico (directivos, stakeholders)
+
+                Máximo 10-12 líneas. Español. Sin markdown. Sin bullets. Redacción fluida tipo documento ejecutivo.
+                No menciones keys de Jira ni términos técnicos de gestión de proyecto.
+
+                DESCRIPCIONES DE LAS IDEAS:
+                {ideaDescriptions}
+                """;
+
+                var briefResult = await gemini.GenerateAsync(briefPrompt);
+                if (!string.IsNullOrWhiteSpace(briefResult) && !briefResult.StartsWith("Error"))
+                {
+                    var briefFormatted = $"📄 *Descripción funcional:*\n\n{EscapeMd(briefResult.Trim())}";
+                    await bot.SendMessage(chatId, briefFormatted, parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error generando brief funcional para /resumen");
+            }
         }
 
         return null;
