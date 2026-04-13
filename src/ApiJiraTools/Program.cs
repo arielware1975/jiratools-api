@@ -15,6 +15,7 @@ builder.Services.AddScoped<ReleaseAuditService>();
 builder.Services.AddScoped<GeminiService>();
 builder.Services.AddScoped<IdeaSummaryService>();
 builder.Services.AddScoped<AnalyzeService>();
+builder.Services.AddScoped<ScopeAnalysisService>();
 builder.Services.AddHostedService<TelegramBotService>();
 builder.Services.AddHostedService<AlertSchedulerService>();
 builder.Services.AddControllers();

@@ -94,6 +94,7 @@ public class TelegramBotService : BackgroundService
                 "/release" => await HandleRelease(projectArg, ct),
                 "/analyze" => await HandleAnalyze(arg, chatId, bot, ct), // recibe issue key
                 "/review" => await HandleReview(arg, chatId, bot, ct),  // recibe issue key
+                "/scope" => await HandleScope(projectArg, ct),
                 "/ideas" => await HandleIdeas(projectArg, ct),
                 _ => null
             };
@@ -163,6 +164,7 @@ public class TelegramBotService : BackgroundService
             `/status` — Resumen: velocidad, carry\-over, alertas
             `/velocity` — SP completados por persona
             `/burndown` — Progreso diario del sprint
+            `/scope` — Análisis de scope del próximo sprint
 
             *🆕 Actividad*
             `/recent` — Issues creados en los últimos 7 días
@@ -889,6 +891,156 @@ public class TelegramBotService : BackgroundService
 
         return sb.ToString();
     }
+
+    private async Task<string> HandleScope(string? projectKey, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(projectKey))
+            return NeedProjectMsg("/scope");
+
+        using var scope = _services.CreateScope();
+        var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
+        var scopeService = scope.ServiceProvider.GetRequiredService<ScopeAnalysisService>();
+
+        var pk = projectKey.ToUpperInvariant();
+        var sprints = await jira.GetSprintsByProjectAsync(pk);
+
+        var activeSprint = sprints.FirstOrDefault(s =>
+            s.State.Equals("active", StringComparison.OrdinalIgnoreCase));
+        if (activeSprint == null)
+            return $"No hay sprint activo en `{EscapeMd(pk)}`\\.";
+
+        // Buscar el próximo sprint (future, o el que le sigue al activo por fecha)
+        var nextSprint = sprints
+            .Where(s => s.State.Equals("future", StringComparison.OrdinalIgnoreCase)
+                     || (s.StartDate.HasValue && activeSprint.EndDate.HasValue && s.StartDate > activeSprint.EndDate))
+            .OrderBy(s => s.StartDate ?? DateTimeOffset.MaxValue)
+            .FirstOrDefault();
+
+        if (nextSprint == null)
+            return $"No se encontró un sprint futuro en `{EscapeMd(pk)}`\\. Creá el próximo sprint en Jira\\.";
+
+        var result = await scopeService.BuildAsync(pk, activeSprint, nextSprint);
+
+        var sb = new StringBuilder();
+
+        // Semáforo
+        var statusEmoji = result.Status switch
+        {
+            ScopeStatus.Verde => "🟢",
+            ScopeStatus.Amarillo => "🟡",
+            ScopeStatus.Rojo => "🔴",
+            _ => "⚪"
+        };
+
+        sb.AppendLine($"{statusEmoji} *Scope Analysis \\— {EscapeMd(result.NextSprintName)}*\n");
+
+        // Fechas clave
+        if (result.NextSprintStart.HasValue)
+            sb.AppendLine($"📅 *Inicio:* {EscapeMd(result.NextSprintStart.Value.LocalDateTime.ToString("dd/MM/yyyy"))}");
+        if (result.StgTargetDate.HasValue)
+            sb.AppendLine($"🧪 *STG:* {EscapeMd(result.StgTargetDate.Value.ToString("dd/MM/yyyy"))}");
+        if (result.ProdPlanningDate.HasValue)
+            sb.AppendLine($"🚀 *PROD/Planning:* {EscapeMd(result.ProdPlanningDate.Value.ToString("dd/MM/yyyy"))}");
+        if (result.BusinessDays > 0)
+            sb.AppendLine($"🗓️ *Días hábiles:* {result.BusinessDays}");
+
+        sb.AppendLine();
+
+        // Velocidad
+        sb.AppendLine("*📊 Velocidad \\(últimos 3 sprints\\):*");
+        foreach (var v in result.VelocityData)
+            sb.AppendLine($"  {EscapeMd(v.SprintName)}: `{v.DoneSp}` SP");
+        sb.AppendLine($"  *Promedio: `{result.AvgVelocity}` SP*");
+
+        sb.AppendLine();
+
+        // Carry-over
+        sb.AppendLine($"*♻️ Carry\\-over del sprint actual* \\({EscapeMd(result.CurrentSprintName)}\\)*:*");
+        sb.AppendLine($"  To Do: {result.CarryOverToDoIssues.Count} issues \\(`{result.CarryOverToDoSp}` SP — 100%\\)");
+        sb.AppendLine($"  En curso: {result.CarryOverInProgressIssues.Count} issues \\(`{result.CarryOverInProgressSpRaw}` SP × {EscapeMd($"{result.CarryOverInProgressFactor:0.#}")} \\= `{result.CarryOverInProgressSpEffective}` SP\\)");
+        sb.AppendLine($"  *Total carry\\-over: `{result.CarryOverSp}` SP*");
+
+        if (result.CarryOverIssues.Count > 0)
+        {
+            sb.AppendLine();
+            foreach (var i in result.CarryOverIssues.Take(10))
+            {
+                var sp = GetSpDisplay(i, jira);
+                var statusIcon = IsToDoStatusStatic(i) ? "⬜" : "🔵";
+                sb.AppendLine($"  {statusIcon} {LinkMd(i.Key)} {sp}SP — {EscapeMd(Truncate(i.Fields?.Summary ?? "", 35))}");
+            }
+            if (result.CarryOverIssues.Count > 10)
+                sb.AppendLine($"  _\\.\\.\\.y {result.CarryOverIssues.Count - 10} más_");
+        }
+
+        sb.AppendLine();
+
+        // Próximo sprint
+        sb.AppendLine($"*🆕 Sprint próximo* \\({EscapeMd(result.NextSprintName)}\\)*:*");
+        sb.AppendLine($"  {result.NextSprintIssues.Count} issues — `{result.NextSprintSp}` SP");
+
+        if (result.NextSprintIssues.Count > 0)
+        {
+            sb.AppendLine();
+            foreach (var i in result.NextSprintIssues.Take(10))
+            {
+                var sp = GetSpDisplay(i, jira);
+                sb.AppendLine($"  ▪️ {LinkMd(i.Key)} {sp}SP — {EscapeMd(Truncate(i.Fields?.Summary ?? "", 35))}");
+            }
+            if (result.NextSprintIssues.Count > 10)
+                sb.AppendLine($"  _\\.\\.\\.y {result.NextSprintIssues.Count - 10} más_");
+        }
+
+        sb.AppendLine();
+
+        // Resumen / proyección
+        sb.AppendLine("*📐 Proyección:*");
+        sb.AppendLine($"  Carry\\-over: `{result.CarryOverSp}` SP");
+        sb.AppendLine($"  Sprint nuevo: `{result.NextSprintSp}` SP");
+        sb.AppendLine($"  *Total comprometido: `{result.TotalCommitted}` SP*");
+        sb.AppendLine($"  *Velocidad promedio: `{result.AvgVelocity}` SP*");
+
+        var diffSign = result.Diff >= 0 ? "\\+" : "";
+        sb.AppendLine($"  *Diferencia: {diffSign}{EscapeMd($"{result.Diff:0.#}")} SP* {(result.Diff >= 0 ? "✅" : "⚠️")}");
+
+        // Alertas
+        var alerts = new List<string>();
+        if (result.CarryOverNoSp.Count > 0)
+            alerts.Add($"⚠️ {result.CarryOverNoSp.Count} issue{(result.CarryOverNoSp.Count > 1 ? "s" : "")} carry\\-over sin SP");
+        if (result.NextNoSp.Count > 0)
+            alerts.Add($"⚠️ {result.NextNoSp.Count} issue{(result.NextNoSp.Count > 1 ? "s" : "")} próximo sprint sin SP");
+        if (result.CarryOverUnassigned.Count > 0)
+            alerts.Add($"👤 {result.CarryOverUnassigned.Count} carry\\-over sin asignar");
+        if (result.NextUnassigned.Count > 0)
+            alerts.Add($"👤 {result.NextUnassigned.Count} próximo sprint sin asignar");
+
+        if (alerts.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("*⚡ Alertas:*");
+            foreach (var a in alerts)
+                sb.AppendLine($"  {a}");
+        }
+
+        return sb.ToString();
+    }
+
+    private static string GetSpDisplay(JiraIssue issue, JiraService jira)
+    {
+        if (issue?.Fields == null) return "0";
+        var sp = issue.Fields.GetStoryPointsValue(jira.StoryPointsFieldId);
+        if (sp <= 0) sp = issue.Fields.GetStoryPointEstimateValue(jira.StoryPointEstimateFieldId);
+        return $"`{sp}`";
+    }
+
+    private static bool IsToDoStatusStatic(JiraIssue issue)
+    {
+        var key = issue?.Fields?.Status?.StatusCategory?.Key ?? string.Empty;
+        return !key.Equals("indeterminate", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string Truncate(string text, int max)
+        => text.Length <= max ? text : text[..max] + "...";
 
     private async Task<string> HandleTree(string? issueKey, CancellationToken ct)
     {
