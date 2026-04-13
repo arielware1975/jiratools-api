@@ -390,6 +390,17 @@ public class JiraService
         fieldIds.Add("customfield_10210");
         fieldIds.Add("customfield_10078");
 
+        // DEBUG: log all extra fields keys and target field raw values
+        _logger.LogInformation("GetDiscoveryTargetDate [{Key}]: ExtraFields keys = [{Keys}]",
+            issue.Key,
+            issue.Fields.ExtraFields != null ? string.Join(", ", issue.Fields.ExtraFields.Keys) : "null");
+        foreach (var fid in fieldIds.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var raw = issue.Fields.GetCustomFieldRaw(fid);
+            _logger.LogInformation("  Field {FieldId}: raw = {Raw}",
+                fid, raw.HasValue ? raw.Value.ToString() : "null");
+        }
+
         foreach (var fid in fieldIds.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             var dt = ExtractEndDateFromRawField(issue, fid);
