@@ -50,7 +50,7 @@ public sealed class AlertService
                 var toDo = workIssues.Count(i => !IsDone(i) && !IsInProgress(i));
                 var inProgress = workIssues.Count(i => IsInProgress(i));
                 if (toDo > 0 || inProgress > 0)
-                    alerts.Add($"⏰ *Sprint cierra en {daysLeft:0.#} días* — {toDo} en To Do, {inProgress} en progreso");
+                    alerts.Add($"⏰ *Sprint cierra en {EscapeMd($"{daysLeft:0.#}")} días* \\— {toDo} en To Do, {inProgress} en progreso");
             }
         }
 
@@ -60,7 +60,7 @@ public sealed class AlertService
         {
             alerts.Add($"👤 *{unassigned.Count} issue{(unassigned.Count > 1 ? "s" : "")} sin asignar:*");
             foreach (var i in unassigned.Take(5))
-                alerts.Add($"   `{i.Key}` {Truncate(i.Fields?.Summary ?? "", 40)}");
+                alerts.Add($"   `{i.Key}` {EscapeMd(Truncate(i.Fields?.Summary ?? "", 40))}");
             if (unassigned.Count > 5)
                 alerts.Add($"   _y {unassigned.Count - 5} más_");
         }
@@ -68,7 +68,13 @@ public sealed class AlertService
         // 4. Issues sin story points
         var noSp = workIssues.Where(i => !IsDone(i) && GetSp(i) == 0).ToList();
         if (noSp.Count > 0)
-            alerts.Add($"📊 *{noSp.Count} issue{(noSp.Count > 1 ? "s" : "")} sin story points*");
+        {
+            alerts.Add($"📊 *{noSp.Count} issue{(noSp.Count > 1 ? "s" : "")} sin story points:*");
+            foreach (var i in noSp.Take(5))
+                alerts.Add($"   `{i.Key}` {EscapeMd(Truncate(i.Fields?.Summary ?? "", 40))}");
+            if (noSp.Count > 5)
+                alerts.Add($"   _y {noSp.Count - 5} más_");
+        }
 
         // 5. Naming mismatch idea ↔ épica
         var namingAlerts = await CheckNamingMismatchAsync(projectKey);
@@ -76,7 +82,7 @@ public sealed class AlertService
         {
             alerts.Add($"📛 *{namingAlerts.Count} nombre{(namingAlerts.Count > 1 ? "s" : "")} idea ≠ épica:*");
             foreach (var nm in namingAlerts.Take(5))
-                alerts.Add($"   `{nm.IdeaKey}` _{Truncate(nm.IdeaName, 25)}_ → `{nm.EpicKey}` _{Truncate(nm.EpicName, 25)}_");
+                alerts.Add($"   `{nm.IdeaKey}` _{EscapeMd(Truncate(nm.IdeaName, 25))}_ → `{nm.EpicKey}` _{EscapeMd(Truncate(nm.EpicName, 25))}_");
             if (namingAlerts.Count > 5)
                 alerts.Add($"   _y {namingAlerts.Count - 5} más_");
         }
@@ -90,11 +96,12 @@ public sealed class AlertService
             return null; // Sin alertas, no mandar nada
 
         var sb = new StringBuilder();
-        sb.AppendLine($"📢 *Alertas diarias — {projectKey}*");
+        sb.AppendLine($"📢 *Alertas diarias \\— {EscapeMd(projectKey)}*");
         sb.AppendLine($"_{EscapeMd(activeSprint.Name)}_\n");
 
+        // Las alertas ya tienen formato MarkdownV2 — no escapar
         foreach (var alert in alerts)
-            sb.AppendLine(EscapeMd(alert));
+            sb.AppendLine(alert);
 
         sb.AppendLine($"\n📈 Progreso: {EscapeMd($"{doneSp}/{totalSp}")} SP \\({EscapeMd($"{pct:0}")}%\\)");
 
