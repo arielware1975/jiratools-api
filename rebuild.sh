@@ -2,7 +2,7 @@
 cd ~/jiratools-api
 git pull
 cd src/ApiJiraTools
-sudo docker build -t jiratools-api .
+sudo docker build --no-cache -t jiratools-api .
 sudo docker rm -f jiratools-api
 sudo docker run -d -p 8080:8080 \
   -e Jira__BaseUrl=https://easy-cash.atlassian.net \
