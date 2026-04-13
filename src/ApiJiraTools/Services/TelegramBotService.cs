@@ -100,6 +100,7 @@ public class TelegramBotService : BackgroundService
                 "/analyze" => await HandleAnalyze(arg, chatId, bot, ct), // recibe issue key
                 "/review" => await HandleReview(arg, chatId, bot, ct),  // recibe issue key
                 "/scope" => await HandleScope(projectArg, ct),
+                "/resumen" => await HandleResumen(arg, chatId, bot, ct),
                 "/ideas" => await HandleIdeas(projectArg, ct),
                 _ => null
             };
@@ -180,6 +181,7 @@ public class TelegramBotService : BackgroundService
 
             *💡 Discovery*
             `/ideas` — Ideas en Ahora y Siguiente
+            `/resumen debin` — Resumen ejecutivo de ideas por tema
 
             *🤖 Análisis IA*
             `/analyze PC\-255` — Análisis inteligente de una idea o issue
@@ -396,6 +398,274 @@ public class TelegramBotService : BackgroundService
         }
 
         return sb.ToString();
+    }
+
+    private async Task<string?> HandleResumen(string? arg, long chatId, ITelegramBotClient bot, CancellationToken ct)
+    {
+        // arg puede ser "debin", "debin CTA", o solo keyword si hay default project
+        if (string.IsNullOrWhiteSpace(arg))
+        {
+            await bot.SendMessage(chatId, "Uso: `/resumen debin`\nBusca ideas que contengan esa palabra y genera un resumen ejecutivo\\.", parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+            return null;
+        }
+
+        // Parsear: si hay 2 palabras y la segunda parece project key, usarla
+        var argParts = arg.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        string keyword = argParts[0].ToLowerInvariant();
+        string? projectKey = argParts.Length > 1 ? argParts[1].Trim() : null;
+        projectKey = ResolveProjectArg(projectKey, chatId);
+
+        if (string.IsNullOrWhiteSpace(projectKey))
+        {
+            await bot.SendMessage(chatId, NeedProjectMsg("/resumen"), parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+            return null;
+        }
+
+        await bot.SendMessage(chatId, $"🔍 Buscando ideas con *{EscapeMd(keyword)}* en {EscapeMd(projectKey.ToUpperInvariant())}\\.\\.\\.", parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+
+        using var scope = _services.CreateScope();
+        var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
+        var gemini = scope.ServiceProvider.GetRequiredService<GeminiService>();
+
+        var pk = projectKey.ToUpperInvariant();
+        var discoveryProject = ResolveDiscoveryProject(pk, _discoveryMapping);
+
+        // Traer ideas de Ahora y Siguiente
+        var ideasAhora = await jira.GetDiscoveryIdeasByRoadmapAsync(discoveryProject, "Ahora");
+        var ideasSiguiente = await jira.GetDiscoveryIdeasByRoadmapAsync(discoveryProject, "Siguiente");
+
+        var allIdeas = new List<JiraIssue>(ideasAhora);
+        foreach (var i in ideasSiguiente)
+            if (!allIdeas.Any(x => x.Key == i.Key))
+                allIdeas.Add(i);
+
+        // Filtrar por keyword en el nombre
+        var matchedIdeas = allIdeas
+            .Where(i => (i.Fields?.Summary ?? "").Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (matchedIdeas.Count == 0)
+        {
+            await bot.SendMessage(chatId, $"No encontré ideas con *{EscapeMd(keyword)}* en {EscapeMd(discoveryProject)}\\.", parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+            return null;
+        }
+
+        await bot.SendMessage(chatId, $"📊 Encontré {matchedIdeas.Count} idea{(matchedIdeas.Count > 1 ? "s" : "")}\\. Analizando épicas y generando resumen\\.\\.\\.", parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+
+        // Fetch épicas + children en paralelo
+        var epicKeys = matchedIdeas
+            .SelectMany(idea => JiraService.GetLinkedEpicsFromIdea(idea)
+                .Select(e => e.Key)
+                .Where(ek => ek.StartsWith(pk + "-", StringComparison.OrdinalIgnoreCase)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var semaphore = new SemaphoreSlim(4);
+        var epicInfoMap = new Dictionary<string, EpicInfo>(StringComparer.OrdinalIgnoreCase);
+
+        var epicTasks = epicKeys.Select(async ek =>
+        {
+            await semaphore.WaitAsync(ct);
+            try
+            {
+                var epic = await jira.GetIssueByKeyAsync(ek);
+                var children = await jira.GetEpicChildIssuesAsync(ek);
+
+                var workIssues = children.Where(c =>
+                    !(c.Fields?.Summary ?? "").Contains("STG", StringComparison.OrdinalIgnoreCase) &&
+                    !(c.Fields?.Summary?.TrimStart() ?? "").StartsWith("Pasaje", StringComparison.OrdinalIgnoreCase)).ToList();
+
+                DateTime? dt = null;
+                if (!string.IsNullOrWhiteSpace(epic.Fields?.DueDate) && DateTime.TryParse(epic.Fields.DueDate, out var parsed))
+                    dt = parsed;
+
+                int done = workIssues.Count(c => string.Equals(c.Fields?.Status?.StatusCategory?.Key, "done", StringComparison.OrdinalIgnoreCase));
+                int inProg = workIssues.Count(c => string.Equals(c.Fields?.Status?.StatusCategory?.Key, "indeterminate", StringComparison.OrdinalIgnoreCase));
+                int toDo = workIssues.Count - done - inProg;
+
+                // SP
+                double doneSp = workIssues.Where(c => string.Equals(c.Fields?.Status?.StatusCategory?.Key, "done", StringComparison.OrdinalIgnoreCase)).Sum(c => GetSpValue(c, jira));
+                double totalSp = workIssues.Sum(c => GetSpValue(c, jira));
+
+                return new EpicInfo
+                {
+                    Key = ek,
+                    Summary = epic.Fields?.Summary ?? "",
+                    TargetDate = dt,
+                    TotalIssues = workIssues.Count,
+                    Done = done,
+                    InProgress = inProg,
+                    ToDo = toDo,
+                    DoneSp = doneSp,
+                    TotalSp = totalSp
+                };
+            }
+            finally { semaphore.Release(); }
+        });
+
+        foreach (var info in await Task.WhenAll(epicTasks))
+            epicInfoMap[info.Key] = info;
+
+        // Obtener fieldMap para fecha objetivo
+        var fieldDefs = await jira.GetFieldsAsync();
+        var fieldMap = jira.BuildDiscoveryFieldMap(fieldDefs);
+
+        // ── Construir datos estructurados ──
+        var sb = new StringBuilder();
+        sb.AppendLine($"*📋 Resumen: {EscapeMd(keyword.ToUpperInvariant())}*");
+        sb.AppendLine($"_{matchedIdeas.Count} idea{(matchedIdeas.Count > 1 ? "s" : "")} encontrada{(matchedIdeas.Count > 1 ? "s" : "")}_\n");
+
+        int globalTotal = 0, globalDone = 0, globalInProg = 0;
+        double globalTotalSp = 0, globalDoneSp = 0;
+        var risks = new List<string>();
+        DateTime? earliestDate = null, latestDate = null;
+
+        // Datos para el prompt de Gemini
+        var geminiData = new StringBuilder();
+        geminiData.AppendLine($"TEMA: {keyword.ToUpperInvariant()}");
+        geminiData.AppendLine($"PROYECTO: {pk}");
+        geminiData.AppendLine($"FECHA HOY: {DateTime.Today:dd/MM/yyyy}");
+        geminiData.AppendLine();
+
+        foreach (var idea in matchedIdeas)
+        {
+            var linkedEpicKeys = JiraService.GetLinkedEpicsFromIdea(idea)
+                .Select(e => e.Key)
+                .Where(ek => ek.StartsWith(pk + "-", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            // Fecha de la idea
+            DateTime? bestDate = null;
+            var ideaTarget = jira.GetDiscoveryTargetDate(idea, fieldMap);
+            if (!string.IsNullOrWhiteSpace(ideaTarget) && DateTime.TryParse(ideaTarget, out var ideaDt))
+                bestDate = ideaDt;
+
+            int totalIssues = 0, done = 0, inProg = 0, toDo = 0;
+            double totalSp = 0, doneSp = 0;
+            var epicSummaries = new List<string>();
+
+            foreach (var ek in linkedEpicKeys)
+            {
+                if (!epicInfoMap.TryGetValue(ek, out var ei)) continue;
+                if (!bestDate.HasValue && ei.TargetDate.HasValue) bestDate = ei.TargetDate;
+                totalIssues += ei.TotalIssues;
+                done += ei.Done;
+                inProg += ei.InProgress;
+                toDo += ei.ToDo;
+                totalSp += ei.TotalSp;
+                doneSp += ei.DoneSp;
+                epicSummaries.Add($"{ei.Key} ({ei.Done}/{ei.TotalIssues} done, {ei.DoneSp}/{ei.TotalSp} SP)");
+            }
+
+            if (bestDate.HasValue)
+            {
+                if (!earliestDate.HasValue || bestDate < earliestDate) earliestDate = bestDate;
+                if (!latestDate.HasValue || bestDate > latestDate) latestDate = bestDate;
+            }
+
+            globalTotal += totalIssues;
+            globalDone += done;
+            globalInProg += inProg;
+            globalTotalSp += totalSp;
+            globalDoneSp += doneSp;
+
+            // Control icon
+            string icon;
+            if (linkedEpicKeys.Count == 0) icon = "❓";
+            else if (totalIssues > 0 && done == totalIssues) icon = "✅";
+            else if (inProg > 0 || done > 0) icon = "🔵";
+            else icon = "⬜";
+
+            double pct = totalIssues > 0 ? (double)done / totalIssues * 100 : 0;
+            var dateStr = bestDate.HasValue ? bestDate.Value.ToString("dd/MM/yyyy") : "sin fecha";
+            var roadmap = ideasAhora.Any(x => x.Key == idea.Key) ? "Ahora" : "Siguiente";
+
+            sb.AppendLine($"{icon} {LinkMd(idea.Key)} — {EscapeMd(idea.Fields?.Summary ?? "")}");
+            sb.AppendLine($"   📅 {EscapeMd(dateStr)} \\| 🗂️ {EscapeMd(roadmap)} \\| {done}/{totalIssues} issues \\({EscapeMd($"{pct:0}")}%\\) \\| {EscapeMd($"{doneSp}/{totalSp}")} SP");
+            sb.AppendLine();
+
+            // Riesgos
+            if (!bestDate.HasValue)
+                risks.Add($"`{idea.Key}` sin fecha objetivo");
+            else if (bestDate.Value.Date < DateTime.Today && done < totalIssues)
+                risks.Add($"`{idea.Key}` fecha vencida \\({EscapeMd(bestDate.Value.ToString("dd/MM"))}\\) y no completada");
+            if (linkedEpicKeys.Count == 0)
+                risks.Add($"`{idea.Key}` sin épica vinculada");
+
+            // Datos para Gemini
+            geminiData.AppendLine($"IDEA: {idea.Key} — {idea.Fields?.Summary}");
+            geminiData.AppendLine($"  Roadmap: {roadmap}");
+            geminiData.AppendLine($"  Fecha objetivo: {dateStr}");
+            geminiData.AppendLine($"  Issues: {done}/{totalIssues} done ({pct:0}%), {inProg} en curso, {toDo} pendientes");
+            geminiData.AppendLine($"  Story Points: {doneSp}/{totalSp} completados");
+            if (epicSummaries.Count > 0)
+                geminiData.AppendLine($"  Épicas: {string.Join("; ", epicSummaries)}");
+            geminiData.AppendLine();
+        }
+
+        // Consolidado
+        double globalPct = globalTotal > 0 ? (double)globalDone / globalTotal * 100 : 0;
+        sb.AppendLine("*📈 Consolidado:*");
+        sb.AppendLine($"  Issues: {globalDone}/{globalTotal} \\({EscapeMd($"{globalPct:0}")}%\\)");
+        sb.AppendLine($"  SP: {EscapeMd($"{globalDoneSp}/{globalTotalSp}")}");
+        if (earliestDate.HasValue && latestDate.HasValue)
+            sb.AppendLine($"  📅 Timeline: {EscapeMd(earliestDate.Value.ToString("dd/MM/yyyy"))} → {EscapeMd(latestDate.Value.ToString("dd/MM/yyyy"))}");
+
+        if (risks.Count > 0)
+        {
+            sb.AppendLine("\n*🚩 Riesgos:*");
+            foreach (var r in risks)
+                sb.AppendLine($"  {r}");
+        }
+
+        // Enviar datos duros primero
+        await bot.SendMessage(chatId, sb.ToString(), parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+
+        // Generar resumen IA
+        geminiData.AppendLine($"CONSOLIDADO: {globalDone}/{globalTotal} issues ({globalPct:0}%), {globalDoneSp}/{globalTotalSp} SP");
+        if (earliestDate.HasValue)
+            geminiData.AppendLine($"TIMELINE: {earliestDate.Value:dd/MM/yyyy} a {latestDate?.ToString("dd/MM/yyyy") ?? "?"}");
+        if (risks.Count > 0)
+            geminiData.AppendLine($"RIESGOS: {risks.Count}");
+
+        var aiPrompt = $"""
+        Sos un PM senior. Generá un resumen ejecutivo breve (máximo 6-8 líneas) de este grupo de ideas relacionadas para presentar a la dirección.
+
+        El resumen debe incluir:
+        1. Estado general del tema (una línea)
+        2. Qué está más avanzado y qué está más atrasado
+        3. Riesgos o puntos de atención
+        4. Próximos hitos / qué se espera a corto plazo
+        5. Si hay algo bloqueado o preocupante
+
+        Sé conciso, directo y en español. No uses markdown. No repitas datos que ya se muestran en el reporte.
+
+        DATOS:
+        {geminiData}
+        """;
+
+        try
+        {
+            var aiResult = await gemini.GenerateAsync(aiPrompt);
+            if (!string.IsNullOrWhiteSpace(aiResult) && !aiResult.StartsWith("Error"))
+            {
+                var aiFormatted = $"🤖 *Análisis IA:*\n\n{EscapeMd(aiResult.Trim())}";
+                await bot.SendMessage(chatId, aiFormatted, parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error generando resumen IA para /resumen");
+        }
+
+        return null;
+    }
+
+    private static double GetSpValue(JiraIssue issue, JiraService jira)
+    {
+        if (issue?.Fields == null) return 0d;
+        var sp = issue.Fields.GetStoryPointsValue(jira.StoryPointsFieldId);
+        return sp > 0 ? sp : issue.Fields.GetStoryPointEstimateValue(jira.StoryPointEstimateFieldId);
     }
 
     private async Task<string> HandleIdeas(string? projectKey, CancellationToken ct)
@@ -637,6 +907,8 @@ public class TelegramBotService : BackgroundService
         public int Done { get; init; }
         public int InProgress { get; init; }
         public int ToDo { get; init; }
+        public double DoneSp { get; init; }
+        public double TotalSp { get; init; }
     }
 
     private record IdeaInfo
