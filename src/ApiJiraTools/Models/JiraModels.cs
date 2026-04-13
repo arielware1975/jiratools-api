@@ -623,3 +623,36 @@ public class JiraDiscoveryFieldMap
     [JsonIgnore]
     public bool HasAnyMappedField => AllConfiguredFieldIds.Any();
 }
+
+// ── Comments ───────────────────────────────────────────────────────────────
+
+public class JiraCommentsWrapper
+{
+    [JsonPropertyName("comments")]
+    public List<JiraComment> Comments { get; set; } = new();
+
+    [JsonPropertyName("total")]
+    public int Total { get; set; }
+}
+
+public class JiraComment
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("author")]
+    public JiraUser? Author { get; set; }
+
+    [JsonPropertyName("body")]
+    public JsonElement? Body { get; set; }
+
+    [JsonPropertyName("created")]
+    public string? Created { get; set; }
+
+    [JsonIgnore]
+    public DateTimeOffset? CreatedDate =>
+        DateTimeOffset.TryParse(Created, out var dto) ? dto : null;
+
+    public string GetBodyText() =>
+        Helpers.JiraAdfTextFormatter.ToPlainText(Body);
+}

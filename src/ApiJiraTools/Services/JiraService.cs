@@ -275,6 +275,34 @@ public class JiraService
         return await SearchIssuesAllPagesAsync(request);
     }
 
+    public async Task<List<JiraComment>> GetIssueCommentsAsync(string issueKey)
+    {
+        _logger.LogInformation("GetIssueCommentsAsync. issueKey={IssueKey}", issueKey);
+        string url = $"/rest/api/3/issue/{Uri.EscapeDataString(issueKey)}/comment?maxResults=100&orderBy=created";
+        using var response = await _httpClient.GetAsync(url);
+        if (!response.IsSuccessStatusCode) return new();
+        string json = await response.Content.ReadAsStringAsync();
+        var wrapper = JsonSerializer.Deserialize<JiraCommentsWrapper>(json, JsonOptions);
+        return wrapper?.Comments ?? new();
+    }
+
+    public static List<(string Key, string Summary)> GetLinkedEpicsFromIdea(JiraIssue? idea)
+    {
+        var result = new List<(string Key, string Summary)>();
+        if (idea?.Fields?.IssueLinks == null) return result;
+
+        foreach (var link in idea.Fields.IssueLinks)
+        {
+            var linked = link.LinkedIssue;
+            if (linked == null) continue;
+            if (!string.Equals(linked.Fields?.IssueType?.Name, "Epic", StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.IsNullOrWhiteSpace(linked.Key)) continue;
+            result.Add((linked.Key, linked.Fields?.Summary ?? string.Empty));
+        }
+
+        return result.GroupBy(x => x.Key, StringComparer.OrdinalIgnoreCase).Select(g => g.First()).ToList();
+    }
+
     // ── Discovery methods ───────────────────────────────────────────────
 
     public async Task<List<JiraFieldDefinition>> GetFieldsAsync()

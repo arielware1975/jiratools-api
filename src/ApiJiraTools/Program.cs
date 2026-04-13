@@ -13,6 +13,7 @@ builder.Services.AddScoped<IssueTreeService>();
 builder.Services.AddScoped<AlertService>();
 builder.Services.AddScoped<ReleaseAuditService>();
 builder.Services.AddScoped<GeminiService>();
+builder.Services.AddScoped<IdeaSummaryService>();
 builder.Services.AddScoped<AnalyzeService>();
 builder.Services.AddHostedService<TelegramBotService>();
 builder.Services.AddHostedService<AlertSchedulerService>();
