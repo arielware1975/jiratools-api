@@ -84,6 +84,7 @@ public class TelegramBotService : BackgroundService
                 "/recent" => await HandleRecent(arg, ct),
                 "/epic" => await HandleEpic(arg, ct),
                 "/release" => await HandleRelease(arg, ct),
+                "/analyze" => await HandleAnalyze(arg, chatId, bot, ct),
                 _ => null
             };
 
@@ -122,6 +123,9 @@ public class TelegramBotService : BackgroundService
 
             *🚀 Release*
             `/release CTA` — Auditoría del release actual
+
+            *🤖 Análisis IA*
+            `/analyze PC\-255` — Análisis inteligente de una idea o issue
 
             *🔔 Alertas*
             `/alerts CTA` — Chequeo de alertas ahora
@@ -347,6 +351,27 @@ public class TelegramBotService : BackgroundService
                 return parts[1].ToUpperInvariant();
         }
         return projectKey;
+    }
+
+    private async Task<string?> HandleAnalyze(string? issueKey, long chatId, ITelegramBotClient bot, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(issueKey))
+        {
+            await bot.SendMessage(chatId, "Uso: /analyze PC\\-255 o /analyze CTA\\-922", parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+            return null; // ya mandamos respuesta
+        }
+
+        // Mandar mensaje de "procesando" porque tarda
+        await bot.SendMessage(chatId, $"🤖 Analizando `{EscapeMd(issueKey.ToUpperInvariant())}`\\.\\.\\. esto puede tardar unos segundos\\.", parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+
+        using var scope = _services.CreateScope();
+        var analyze = scope.ServiceProvider.GetRequiredService<AnalyzeService>();
+
+        var result = await analyze.AnalyzeIssueAsync(issueKey.ToUpperInvariant());
+
+        // Gemini devuelve texto plano, lo mandamos sin MarkdownV2 para evitar problemas de escape
+        await bot.SendMessage(chatId, result, cancellationToken: ct);
+        return null; // ya mandamos la respuesta directamente
     }
 
     private async Task<string> HandleAlerts(string? projectKey, CancellationToken ct)

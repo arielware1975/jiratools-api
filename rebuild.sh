@@ -14,6 +14,7 @@ sudo docker run -d -p 8080:8080 \
   -e Telegram__AlertHourUtc=12 \
   -e Telegram__AlertMinuteUtc=0 \
   -e Telegram__DiscoveryProjectMapping="CTA:PC;NAT:IDEA" \
+  -e Gemini__ApiKey=AIzaSyBxt79ryoXxPDcGXQ-MpntTaO6RYJa20rI \
   --name jiratools-api \
   --restart unless-stopped \
   jiratools-api
