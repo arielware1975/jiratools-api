@@ -369,25 +369,10 @@ public class JiraService
         var ideas = await GetDiscoveryIdeasAsync(projectKey, maxResults);
         var fieldMap = BuildDiscoveryFieldMap(await GetFieldsAsync());
 
-        _logger.LogInformation("FieldMap: RoadmapFieldId={R1}, RoadmapFieldIdAlt={R2}, TargetFieldId={T1}, TargetFieldIdAlt={T2}",
-            fieldMap.RoadmapFieldId, fieldMap.RoadmapFieldIdAlt, fieldMap.ProjectTargetFieldId, fieldMap.ProjectTargetFieldIdAlt);
-
         if (string.IsNullOrWhiteSpace(roadmapValue))
             return ideas;
 
-        // DEBUG: log roadmap values for first 3 ideas
-        foreach (var idea in ideas.Take(3))
-        {
-            var rv = GetRoadmapValue(idea, fieldMap);
-            var extraKeys = idea.Fields?.ExtraFields != null ? string.Join(", ", idea.Fields.ExtraFields.Keys.Take(15)) : "null";
-            var rawRoadmap = idea.Fields?.GetCustomFieldRaw(fieldMap.RoadmapFieldId ?? "");
-            _logger.LogInformation("  Idea {Key}: roadmapValue='{RV}', rawRoadmap={Raw}, extraKeys=[{Keys}]",
-                idea.Key, rv, rawRoadmap.HasValue ? rawRoadmap.Value.ToString() : "null", extraKeys);
-        }
-
-        var filtered = ideas.Where(i => MatchesRoadmapFilter(GetRoadmapValue(i, fieldMap), roadmapValue)).ToList();
-        _logger.LogInformation("Filter '{Filter}': {Total} ideas → {Filtered} matched", roadmapValue, ideas.Count, filtered.Count);
-        return filtered;
+        return ideas.Where(i => MatchesRoadmapFilter(GetRoadmapValue(i, fieldMap), roadmapValue)).ToList();
     }
 
     public string GetDiscoveryTargetDate(JiraIssue issue, JiraDiscoveryFieldMap? fieldMap = null)
@@ -404,17 +389,6 @@ public class JiraService
         }
         fieldIds.Add("customfield_10210");
         fieldIds.Add("customfield_10078");
-
-        // DEBUG: log all extra fields keys and target field raw values
-        _logger.LogInformation("GetDiscoveryTargetDate [{Key}]: ExtraFields keys = [{Keys}]",
-            issue.Key,
-            issue.Fields.ExtraFields != null ? string.Join(", ", issue.Fields.ExtraFields.Keys) : "null");
-        foreach (var fid in fieldIds.Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            var raw = issue.Fields.GetCustomFieldRaw(fid);
-            _logger.LogInformation("  Field {FieldId}: raw = {Raw}",
-                fid, raw.HasValue ? raw.Value.ToString() : "null");
-        }
 
         foreach (var fid in fieldIds.Distinct(StringComparer.OrdinalIgnoreCase))
         {

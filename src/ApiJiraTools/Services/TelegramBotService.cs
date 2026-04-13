@@ -355,14 +355,67 @@ public class TelegramBotService : BackgroundService
         using var scope = _services.CreateScope();
         var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
 
-        var discoveryProject = ResolveDiscoveryProject(projectKey.ToUpperInvariant(), _discoveryMapping);
+        var pk = projectKey.ToUpperInvariant();
+        var discoveryProject = ResolveDiscoveryProject(pk, _discoveryMapping);
 
-        // Traer ideas de Ahora y Siguiente usando el fieldMap dinámico
+        // Traer ideas de Ahora y Siguiente
         var ideasAhora = await jira.GetDiscoveryIdeasByRoadmapAsync(discoveryProject, "Ahora");
         var ideasSiguiente = await jira.GetDiscoveryIdeasByRoadmapAsync(discoveryProject, "Siguiente");
 
         if (ideasAhora.Count == 0 && ideasSiguiente.Count == 0)
             return $"No hay ideas en *Ahora* ni *Siguiente* en *{EscapeMd(discoveryProject)}*\\.";
+
+        // Recolectar épicas linkeadas de todas las ideas para obtener fechas
+        var allIdeas = new List<JiraIssue>(ideasAhora);
+        foreach (var i in ideasSiguiente)
+            if (!allIdeas.Any(x => x.Key == i.Key))
+                allIdeas.Add(i);
+
+        // Obtener DueDate de épicas linkeadas (batch: recolectar keys, luego fetch)
+        var epicDateMap = new Dictionary<string, DateTime?>(StringComparer.OrdinalIgnoreCase);
+        var epicKeys = allIdeas
+            .SelectMany(idea => JiraService.GetLinkedEpicsFromIdea(idea)
+                .Select(e => e.Key)
+                .Where(ek => ek.StartsWith(pk + "-", StringComparison.OrdinalIgnoreCase)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Fetch épicas en paralelo (máx 4 concurrent)
+        var semaphore = new SemaphoreSlim(4);
+        var epicTasks = epicKeys.Select(async ek =>
+        {
+            await semaphore.WaitAsync(ct);
+            try
+            {
+                var epic = await jira.GetIssueByKeyAsync(ek);
+                DateTime? dt = null;
+                if (!string.IsNullOrWhiteSpace(epic.Fields?.DueDate) && DateTime.TryParse(epic.Fields.DueDate, out var parsed))
+                    dt = parsed;
+                return (Key: ek, Date: dt);
+            }
+            finally { semaphore.Release(); }
+        });
+        foreach (var result in await Task.WhenAll(epicTasks))
+            epicDateMap[result.Key] = result.Date;
+
+        // Para cada idea, buscar la fecha de su épica linkeada
+        var ideaDateMap = new Dictionary<string, DateTime?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var idea in allIdeas)
+        {
+            var linkedEpics = JiraService.GetLinkedEpicsFromIdea(idea)
+                .Select(e => e.Key)
+                .Where(ek => ek.StartsWith(pk + "-", StringComparison.OrdinalIgnoreCase));
+            DateTime? best = null;
+            foreach (var ek in linkedEpics)
+            {
+                if (epicDateMap.TryGetValue(ek, out var dt) && dt.HasValue)
+                {
+                    if (!best.HasValue || dt.Value > best.Value)
+                        best = dt;
+                }
+            }
+            ideaDateMap[idea.Key] = best;
+        }
 
         var sb = new StringBuilder();
         sb.AppendLine($"*💡 Ideas \\- {EscapeMd(discoveryProject)}*\n");
@@ -375,12 +428,9 @@ public class TelegramBotService : BackgroundService
             {
                 var status = idea.Fields?.Status?.Name ?? "";
                 var assignee = idea.Fields?.Assignee?.DisplayName ?? "Sin asignar";
-                var target = idea.Fields?.GetCustomFieldAsString("customfield_10210")
-                          ?? idea.Fields?.GetCustomFieldAsString("customfield_10078")
-                          ?? "";
                 var targetText = "";
-                if (DateTime.TryParse(target, out var dt))
-                    targetText = $" \\| 🎯 {EscapeMd(dt.ToString("dd/MM/yyyy"))}";
+                if (ideaDateMap.TryGetValue(idea.Key, out var dt) && dt.HasValue)
+                    targetText = $" \\| 🎯 {EscapeMd(dt.Value.ToString("dd/MM/yyyy"))}";
 
                 sb.AppendLine($"  {LinkMd(idea.Key)} \\| {EscapeMd(status)} \\| {EscapeMd(assignee)}{targetText}");
                 sb.AppendLine($"    {EscapeMd(idea.Fields?.Summary ?? "")}");
