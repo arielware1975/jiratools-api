@@ -375,7 +375,14 @@ public class TelegramBotService : BackgroundService
             {
                 var status = idea.Fields?.Status?.Name ?? "";
                 var assignee = idea.Fields?.Assignee?.DisplayName ?? "Sin asignar";
-                sb.AppendLine($"  {LinkMd(idea.Key)} \\| {EscapeMd(status)} \\| {EscapeMd(assignee)}");
+                var target = idea.Fields?.GetCustomFieldAsString("customfield_10210")
+                          ?? idea.Fields?.GetCustomFieldAsString("customfield_10078")
+                          ?? "";
+                var targetText = "";
+                if (DateTime.TryParse(target, out var dt))
+                    targetText = $" \\| 🎯 {EscapeMd(dt.ToString("dd/MM/yyyy"))}";
+
+                sb.AppendLine($"  {LinkMd(idea.Key)} \\| {EscapeMd(status)} \\| {EscapeMd(assignee)}{targetText}");
                 sb.AppendLine($"    {EscapeMd(idea.Fields?.Summary ?? "")}");
             }
             sb.AppendLine();

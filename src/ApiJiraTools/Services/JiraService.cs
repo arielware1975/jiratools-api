@@ -342,9 +342,11 @@ public class JiraService
 
         string jql = $"project = {projectKey} ORDER BY Rank ASC";
         var fields = BuildStandardIssueFields();
-        // Agregar campos de roadmap para discovery
+        // Agregar campos de discovery: roadmap + fecha objetivo
         AddIfNotExists(fields, "customfield_10852");
         AddIfNotExists(fields, "customfield_10204");
+        AddIfNotExists(fields, "customfield_10210"); // Objetivo del proyecto
+        AddIfNotExists(fields, "customfield_10078"); // Objetivo (alt)
         var request = new JiraJqlSearchRequest { Jql = jql, MaxResults = maxResults, Fields = fields };
         var issues = await SearchIssuesAllPagesAsync(request);
 
