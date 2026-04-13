@@ -6,7 +6,8 @@
       "Bash(curl -s http://localhost:5099/api/health)",
       "Bash(pkill -f \"dotnet.*ApiJiraTools\")",
       "Bash(gh auth:*)",
-      "Bash(gh repo:*)"
+      "Bash(gh repo:*)",
+      "WebSearch"
     ]
   }
 }
