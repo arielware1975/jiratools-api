@@ -633,6 +633,46 @@ public class TelegramBotService : BackgroundService
         // Enviar datos duros primero
         await bot.SendMessage(chatId, sb.ToString(), parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
 
+        // ── Resumen ejecutivo por idea (un solo call a Gemini) ──
+        if (ideaDescriptions.Length > 0)
+        {
+            try
+            {
+                var perIdeaPrompt = $"""
+                Sos un PM senior. Para cada idea listada abajo, generá un resumen ejecutivo de exactamente 2-3 líneas
+                que explique QUÉ hace esa idea desde el punto de vista de negocio y cuál es su estado actual.
+
+                Formato de salida (respetalo exactamente, una idea tras otra):
+                [KEY] TÍTULO
+                Resumen de 2-3 líneas.
+
+                Reglas:
+                - Español, lenguaje de negocio (no técnico)
+                - No uses markdown, bullets ni emojis
+                - Mencioná el estado (avance, pendiente, en curso) basándote en los datos de progreso
+                - Si tiene fecha objetivo, mencionala
+                - Sé directo y concreto
+
+                DATOS DE LAS IDEAS:
+                {geminiData}
+
+                DESCRIPCIONES:
+                {ideaDescriptions}
+                """;
+
+                var perIdeaResult = await gemini.GenerateAsync(perIdeaPrompt);
+                if (!string.IsNullOrWhiteSpace(perIdeaResult) && !perIdeaResult.StartsWith("Error"))
+                {
+                    var perIdeaFormatted = $"📝 *Resumen por idea:*\n\n{EscapeMd(perIdeaResult.Trim())}";
+                    await SendLongMessage(bot, chatId, perIdeaFormatted, ct, ParseMode.MarkdownV2);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error generando resumen por idea para /resumen");
+            }
+        }
+
         // Generar resumen IA
         geminiData.AppendLine($"CONSOLIDADO: {globalDone}/{globalTotal} issues ({globalPct:0}%), {globalDoneSp}/{globalTotalSp} SP");
         if (earliestDate.HasValue)
