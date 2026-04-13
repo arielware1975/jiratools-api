@@ -365,14 +365,12 @@ public class TelegramBotService : BackgroundService
         if (ideasAhora.Count == 0 && ideasSiguiente.Count == 0)
             return $"No hay ideas en *Ahora* ni *Siguiente* en *{EscapeMd(discoveryProject)}*\\.";
 
-        // Recolectar épicas linkeadas de todas las ideas para obtener fechas
+        // Recolectar épicas linkeadas únicas
         var allIdeas = new List<JiraIssue>(ideasAhora);
         foreach (var i in ideasSiguiente)
             if (!allIdeas.Any(x => x.Key == i.Key))
                 allIdeas.Add(i);
 
-        // Obtener DueDate de épicas linkeadas (batch: recolectar keys, luego fetch)
-        var epicDateMap = new Dictionary<string, DateTime?>(StringComparer.OrdinalIgnoreCase);
         var epicKeys = allIdeas
             .SelectMany(idea => JiraService.GetLinkedEpicsFromIdea(idea)
                 .Select(e => e.Key)
@@ -380,41 +378,104 @@ public class TelegramBotService : BackgroundService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // Fetch épicas en paralelo (máx 4 concurrent)
+        // Fetch épicas + children en paralelo (máx 4 concurrent)
         var semaphore = new SemaphoreSlim(4);
+        var epicInfoMap = new Dictionary<string, EpicInfo>(StringComparer.OrdinalIgnoreCase);
+
         var epicTasks = epicKeys.Select(async ek =>
         {
             await semaphore.WaitAsync(ct);
             try
             {
                 var epic = await jira.GetIssueByKeyAsync(ek);
+                var children = await jira.GetEpicChildIssuesAsync(ek);
+
+                // Filtrar cards operativas (STG, Pasaje)
+                var workIssues = children.Where(c =>
+                    !(c.Fields?.Summary ?? "").Contains("STG", StringComparison.OrdinalIgnoreCase) &&
+                    !(c.Fields?.Summary?.TrimStart() ?? "").StartsWith("Pasaje", StringComparison.OrdinalIgnoreCase)).ToList();
+
                 DateTime? dt = null;
                 if (!string.IsNullOrWhiteSpace(epic.Fields?.DueDate) && DateTime.TryParse(epic.Fields.DueDate, out var parsed))
                     dt = parsed;
-                return (Key: ek, Date: dt);
+
+                int done = workIssues.Count(c => string.Equals(c.Fields?.Status?.StatusCategory?.Key, "done", StringComparison.OrdinalIgnoreCase));
+                int inProg = workIssues.Count(c => string.Equals(c.Fields?.Status?.StatusCategory?.Key, "indeterminate", StringComparison.OrdinalIgnoreCase));
+                int toDo = workIssues.Count - done - inProg;
+
+                return new EpicInfo
+                {
+                    Key = ek,
+                    TargetDate = dt,
+                    TotalIssues = workIssues.Count,
+                    Done = done,
+                    InProgress = inProg,
+                    ToDo = toDo
+                };
             }
             finally { semaphore.Release(); }
         });
-        foreach (var result in await Task.WhenAll(epicTasks))
-            epicDateMap[result.Key] = result.Date;
 
-        // Para cada idea, buscar la fecha de su épica linkeada
-        var ideaDateMap = new Dictionary<string, DateTime?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var info in await Task.WhenAll(epicTasks))
+            epicInfoMap[info.Key] = info;
+
+        // Construir info por idea (agregar datos de todas sus épicas)
+        var ideaInfoMap = new Dictionary<string, IdeaInfo>(StringComparer.OrdinalIgnoreCase);
         foreach (var idea in allIdeas)
         {
-            var linkedEpics = JiraService.GetLinkedEpicsFromIdea(idea)
+            var linkedEpicKeys = JiraService.GetLinkedEpicsFromIdea(idea)
                 .Select(e => e.Key)
-                .Where(ek => ek.StartsWith(pk + "-", StringComparison.OrdinalIgnoreCase));
-            DateTime? best = null;
-            foreach (var ek in linkedEpics)
+                .Where(ek => ek.StartsWith(pk + "-", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            DateTime? bestDate = null;
+            int totalIssues = 0, done = 0, inProg = 0, toDo = 0;
+            bool hasMissingDate = false;
+            bool hasOverdueDate = false;
+
+            foreach (var ek in linkedEpicKeys)
             {
-                if (epicDateMap.TryGetValue(ek, out var dt) && dt.HasValue)
+                if (!epicInfoMap.TryGetValue(ek, out var ei)) continue;
+
+                if (ei.TargetDate.HasValue)
                 {
-                    if (!best.HasValue || dt.Value > best.Value)
-                        best = dt;
+                    if (!bestDate.HasValue || ei.TargetDate.Value > bestDate.Value)
+                        bestDate = ei.TargetDate;
+                    if (ei.TargetDate.Value.Date < DateTime.Today)
+                        hasOverdueDate = true;
                 }
+                else
+                    hasMissingDate = true;
+
+                totalIssues += ei.TotalIssues;
+                done += ei.Done;
+                inProg += ei.InProgress;
+                toDo += ei.ToDo;
             }
-            ideaDateMap[idea.Key] = best;
+
+            // Determinar icono de control
+            string icon;
+            if (linkedEpicKeys.Count == 0)
+                icon = "❓"; // sin épica
+            else if (totalIssues > 0 && done == totalIssues)
+                icon = "✅"; // todo done
+            else if (hasMissingDate || hasOverdueDate)
+                icon = "⚠️"; // problemas
+            else if (inProg > 0 || done > 0)
+                icon = "🔵"; // en progreso, sin problemas
+            else
+                icon = "⬜"; // sin avance
+
+            ideaInfoMap[idea.Key] = new IdeaInfo
+            {
+                TargetDate = bestDate,
+                TotalIssues = totalIssues,
+                Done = done,
+                InProgress = inProg,
+                ToDo = toDo,
+                Icon = icon,
+                EpicCount = linkedEpicKeys.Count
+            };
         }
 
         var sb = new StringBuilder();
@@ -426,13 +487,18 @@ public class TelegramBotService : BackgroundService
             sb.AppendLine($"*{emoji} {EscapeMd(label)}* \\({list.Count}\\)");
             foreach (var idea in list)
             {
+                var info = ideaInfoMap.GetValueOrDefault(idea.Key);
+                var icon = info?.Icon ?? "❓";
                 var status = idea.Fields?.Status?.Name ?? "";
-                var assignee = idea.Fields?.Assignee?.DisplayName ?? "Sin asignar";
                 var targetText = "";
-                if (ideaDateMap.TryGetValue(idea.Key, out var dt) && dt.HasValue)
-                    targetText = $" \\| 🎯 {EscapeMd(dt.Value.ToString("dd/MM/yyyy"))}";
+                if (info?.TargetDate != null)
+                    targetText = $" \\| 🎯 {EscapeMd(info.TargetDate.Value.ToString("dd/MM/yyyy"))}";
 
-                sb.AppendLine($"  {LinkMd(idea.Key)} \\| {EscapeMd(status)} \\| {EscapeMd(assignee)}{targetText}");
+                var progressText = "";
+                if (info != null && info.TotalIssues > 0)
+                    progressText = $" \\| {info.Done}/{info.TotalIssues}";
+
+                sb.AppendLine($"{icon} {LinkMd(idea.Key)} \\| {EscapeMd(status)}{targetText}{progressText}");
                 sb.AppendLine($"    {EscapeMd(idea.Fields?.Summary ?? "")}");
             }
             sb.AppendLine();
@@ -442,6 +508,27 @@ public class TelegramBotService : BackgroundService
         AppendBucket("Siguiente", "🟡", ideasSiguiente);
 
         return sb.ToString();
+    }
+
+    private record EpicInfo
+    {
+        public string Key { get; init; } = "";
+        public DateTime? TargetDate { get; init; }
+        public int TotalIssues { get; init; }
+        public int Done { get; init; }
+        public int InProgress { get; init; }
+        public int ToDo { get; init; }
+    }
+
+    private record IdeaInfo
+    {
+        public DateTime? TargetDate { get; init; }
+        public int TotalIssues { get; init; }
+        public int Done { get; init; }
+        public int InProgress { get; init; }
+        public int ToDo { get; init; }
+        public string Icon { get; init; } = "";
+        public int EpicCount { get; init; }
     }
 
     private static string ResolveDiscoveryProject(string projectKey, string mapping)
