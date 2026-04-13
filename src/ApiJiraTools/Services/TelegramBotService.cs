@@ -623,7 +623,10 @@ public class TelegramBotService : BackgroundService
         // Convert **bold** to <b>bold</b>
         text = System.Text.RegularExpressions.Regex.Replace(text, @"\*\*(.+?)\*\*", "<b>$1</b>");
 
-        // Convert *italic* to <i>italic</i>
+        // Convert markdown list bullets (* item) to clean bullets (• item)
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"(?m)^\s*\*\s+", "• ");
+
+        // Convert remaining *italic* to <i>italic</i>
         text = System.Text.RegularExpressions.Regex.Replace(text, @"(?<![<])\*(.+?)\*", "<i>$1</i>");
 
         // Replace issue keys (CTA-123, PC-255) with clickable links
