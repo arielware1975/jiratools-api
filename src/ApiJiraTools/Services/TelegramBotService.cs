@@ -15,6 +15,7 @@ public class TelegramBotService : BackgroundService
     private readonly ILogger<TelegramBotService> _logger;
     private readonly string _botToken;
     private readonly string _jiraBaseUrl;
+    private readonly string _discoveryMapping;
 
     public TelegramBotService(
         IServiceProvider services,
@@ -26,6 +27,7 @@ public class TelegramBotService : BackgroundService
         _logger = logger;
         _botToken = options.Value.BotToken;
         _jiraBaseUrl = jiraOptions.Value.BaseUrl.TrimEnd('/');
+        _discoveryMapping = options.Value.DiscoveryProjectMapping;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -85,6 +87,7 @@ public class TelegramBotService : BackgroundService
                 "/epic" => await HandleEpic(arg, ct),
                 "/release" => await HandleRelease(arg, ct),
                 "/analyze" => await HandleAnalyze(arg, chatId, bot, ct),
+                "/ideas" => await HandleIdeas(arg, ct),
                 _ => null
             };
 
@@ -123,6 +126,9 @@ public class TelegramBotService : BackgroundService
 
             *🚀 Release*
             `/release CTA` — Auditoría del release actual
+
+            *💡 Discovery*
+            `/ideas CTA` — Ideas en Ahora y Siguiente
 
             *🤖 Análisis IA*
             `/analyze PC\-255` — Análisis inteligente de una idea o issue
@@ -336,6 +342,67 @@ public class TelegramBotService : BackgroundService
         else
         {
             sb.AppendLine($"\nℹ️ Sin issues prox\\_release en STG\\.");
+        }
+
+        return sb.ToString();
+    }
+
+    private async Task<string> HandleIdeas(string? projectKey, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(projectKey))
+            return "Uso: `/ideas CTA`";
+
+        using var scope = _services.CreateScope();
+        var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
+
+        var discoveryProject = ResolveDiscoveryProject(projectKey.ToUpperInvariant(), _discoveryMapping);
+        var ideas = await jira.GetDiscoveryIdeasAsync(discoveryProject);
+
+        if (ideas.Count == 0)
+            return $"No se encontraron ideas en el proyecto *{EscapeMd(discoveryProject)}*\\.";
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"*💡 Ideas \\- {EscapeMd(discoveryProject)}*\n");
+
+        var grouped = new Dictionary<string, List<JiraIssue>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var idea in ideas)
+        {
+            var roadmap = jira.GetDiscoveryRoadmapValue(idea);
+            if (string.IsNullOrWhiteSpace(roadmap)) roadmap = "Sin roadmap";
+
+            // Solo mostrar Ahora y Siguiente
+            bool isAhora = roadmap.Contains("Ahora", StringComparison.OrdinalIgnoreCase)
+                        || roadmap.Contains("Now", StringComparison.OrdinalIgnoreCase);
+            bool isSiguiente = roadmap.Contains("Siguiente", StringComparison.OrdinalIgnoreCase)
+                            || roadmap.Contains("Next", StringComparison.OrdinalIgnoreCase);
+
+            if (!isAhora && !isSiguiente) continue;
+
+            var label = isAhora ? "Ahora" : "Siguiente";
+            if (!grouped.ContainsKey(label))
+                grouped[label] = new List<JiraIssue>();
+            grouped[label].Add(idea);
+        }
+
+        if (grouped.Count == 0)
+            return $"No hay ideas en *Ahora* ni *Siguiente* en *{EscapeMd(discoveryProject)}*\\.";
+
+        foreach (var bucket in new[] { "Ahora", "Siguiente" })
+        {
+            if (!grouped.TryGetValue(bucket, out var list)) continue;
+
+            var emoji = bucket == "Ahora" ? "🔴" : "🟡";
+            sb.AppendLine($"*{emoji} {EscapeMd(bucket)}* \\({list.Count}\\)");
+
+            foreach (var idea in list)
+            {
+                var status = idea.Fields?.Status?.Name ?? "";
+                var assignee = idea.Fields?.Assignee?.DisplayName ?? "Sin asignar";
+                sb.AppendLine($"  {LinkMd(idea.Key)} \\| {EscapeMd(status)} \\| {EscapeMd(assignee)}");
+                sb.AppendLine($"    {EscapeMd(idea.Fields?.Summary ?? "")}");
+            }
+            sb.AppendLine();
         }
 
         return sb.ToString();
