@@ -69,9 +69,22 @@ public sealed class StgChecklistService
 
         var report = new StgChecklistReport
         {
-            SprintName = sprintName,
+            SprintName  = sprintName,
             GeneratedAt = DateTime.Now,
+            SprintKeys  = sprintKeys,
         };
+
+        // Registrar épicas excluidas por stg_not_required para informarlas en el reporte
+        foreach (var ek in excludedByLabel)
+        {
+            fetchedEpics.TryGetValue(ek, out var excEpic);
+            report.ExcludedEpics.Add(new StgIssueRow
+            {
+                Key     = ek,
+                Summary = excEpic?.Fields?.Summary ?? ek,
+                Status  = excEpic?.Fields?.Status?.Name ?? string.Empty,
+            });
+        }
 
         foreach (var kvp in epicMap)
         {
@@ -96,6 +109,9 @@ public sealed class StgChecklistService
 
             // Dev issues = hijos que NO son operacionales y NO tienen label stg_not_required.
             // Los finalizados SÍ se incluyen: deben estar linkeados a la STG aunque estén cerrados.
+            var childrenExcluded = allChildren
+                .Where(c => HasLabel(c, "stg_not_required"))
+                .ToList();
             var devIssues = allChildren
                 .Where(c => !IsOperationalTask(c) && !HasLabel(c, "stg_not_required"))
                 .ToList();
@@ -105,6 +121,7 @@ public sealed class StgChecklistService
             // hijos directos de la épica), hay que hacer fetch completo — issueLinks
             // no trae labels.
             var stgRows = new List<StgIssueRow>();
+            var excludedLinkedRows = new List<StgIssueRow>(); // para ExcludedIssues informativo
             if (stgCard != null)
             {
                 // Cache local: si el issue linkeado es un hijo directo de la épica ya lo tenemos
@@ -120,6 +137,7 @@ public sealed class StgChecklistService
                     // Verificar label stg_not_required en el issue linkeado.
                     // Si es hijo directo de la épica ya tenemos los labels en allChildren.
                     bool skipByLabel;
+                    JiraIssue? fullForDisplay = null;
                     if (childMap.TryGetValue(linked.Key, out var asChild))
                     {
                         skipByLabel = HasLabel(asChild, "stg_not_required");
@@ -129,8 +147,8 @@ public sealed class StgChecklistService
                         // No es hijo directo: traer el issue completo para verificar labels
                         try
                         {
-                            var full = await _jiraService.GetIssueByKeyAsync(linked.Key);
-                            skipByLabel = HasLabel(full, "stg_not_required");
+                            fullForDisplay = await _jiraService.GetIssueByKeyAsync(linked.Key);
+                            skipByLabel = HasLabel(fullForDisplay, "stg_not_required");
                         }
                         catch (Exception ex)
                         {
@@ -138,17 +156,27 @@ public sealed class StgChecklistService
                             skipByLabel = false;
                         }
                     }
-                    if (skipByLabel) continue;
+
+                    if (skipByLabel)
+                    {
+                        excludedLinkedRows.Add(new StgIssueRow
+                        {
+                            Key     = linked.Key,
+                            Summary = fullForDisplay?.Fields?.Summary ?? linked.Fields?.Summary ?? string.Empty,
+                            Status  = fullForDisplay?.Fields?.Status?.Name ?? linked.Fields?.Status?.Name ?? string.Empty,
+                        });
+                        continue;
+                    }
 
                     stgRows.Add(new StgIssueRow
                     {
-                        Key = linked.Key,
-                        Summary = linked.Fields?.Summary ?? string.Empty,
-                        Status = linked.Fields?.Status?.Name ?? string.Empty,
-                        IssueType = linked.Fields?.IssueType?.Name ?? string.Empty,
-                        Assignee = string.Empty,
+                        Key        = linked.Key,
+                        Summary    = linked.Fields?.Summary ?? string.Empty,
+                        Status     = linked.Fields?.Status?.Name ?? string.Empty,
+                        IssueType  = linked.Fields?.IssueType?.Name ?? string.Empty,
+                        Assignee   = string.Empty,
                         IsInSprint = sprintKeys.Contains(linked.Key),
-                        IsDone = IsDoneLinked(linked),
+                        IsDone     = IsDoneLinked(linked),
                     });
                 }
             }
@@ -168,29 +196,50 @@ public sealed class StgChecklistService
             }
 
             var missingFromStg = devRows.Where(r => !r.IsMatched).ToList();
-            var extraInStg = stgRows.Where(r => !r.IsMatched).ToList();
+            var extraInStg     = stgRows.Where(r => !r.IsMatched).ToList();
+
+            // Ordenar stgRows para que coincida visualmente con el orden de devRows
+            var devKeyOrder = devRows
+                .Select((r, i) => (r.Key, i))
+                .ToDictionary(x => x.Key, x => x.i, StringComparer.OrdinalIgnoreCase);
+            stgRows = stgRows
+                .OrderBy(r => devKeyOrder.TryGetValue(r.Key, out int pos) ? pos : int.MaxValue)
+                .ThenBy(r => r.Key)
+                .ToList();
+
+            // ExcludedIssues: hijos directos con stg_not_required + linkeados fetched
+            var excludedIssues = childrenExcluded
+                .Select(c => new StgIssueRow
+                {
+                    Key     = c.Key,
+                    Summary = c.Fields?.Summary ?? string.Empty,
+                    Status  = c.Fields?.Status?.Name ?? string.Empty,
+                })
+                .Concat(excludedLinkedRows)
+                .ToList();
 
             StgAlignment alignment;
-            if (stgCard == null) alignment = StgAlignment.NoCard;
-            else if (stgRows.Count == 0) alignment = StgAlignment.Empty;
+            if (stgCard == null)                alignment = StgAlignment.NoCard;
+            else if (stgRows.Count == 0)        alignment = StgAlignment.Empty;
             else if (missingFromStg.Count == 0) alignment = StgAlignment.Ok;
-            else alignment = StgAlignment.Partial;
+            else                                alignment = StgAlignment.Partial;
 
             report.Epics.Add(new StgEpicRow
             {
-                EpicKey = epicKey,
-                EpicSummary = epicIssue.Fields?.Summary ?? epicKey,
-                EpicStatus = epicIssue.Fields?.Status?.Name ?? string.Empty,
-                HasStgCard = stgCard != null,
-                StgKey = stgCard?.Key ?? string.Empty,
-                StgSummary = stgCard?.Fields?.Summary ?? string.Empty,
-                StgStatus = stgCard?.Fields?.Status?.Name ?? string.Empty,
-                StgInSprint = stgCard != null && sprintKeys.Contains(stgCard.Key),
-                DevIssues = devRows,
-                StgSubtasks = stgRows,
-                Alignment = alignment,
+                EpicKey        = epicKey,
+                EpicSummary    = epicIssue.Fields?.Summary ?? epicKey,
+                EpicStatus     = epicIssue.Fields?.Status?.Name ?? string.Empty,
+                HasStgCard     = stgCard != null,
+                StgKey         = stgCard?.Key ?? string.Empty,
+                StgSummary     = stgCard?.Fields?.Summary ?? string.Empty,
+                StgStatus      = stgCard?.Fields?.Status?.Name ?? string.Empty,
+                StgInSprint    = stgCard != null && sprintKeys.Contains(stgCard.Key),
+                DevIssues      = devRows,
+                StgSubtasks    = stgRows,
+                Alignment      = alignment,
                 MissingFromStg = missingFromStg,
-                ExtraInStg = extraInStg,
+                ExtraInStg     = extraInStg,
+                ExcludedIssues = excludedIssues,
             });
         }
 

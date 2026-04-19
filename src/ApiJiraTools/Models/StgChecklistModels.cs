@@ -8,6 +8,10 @@ public class StgChecklistReport
     public DateTime GeneratedAt { get; set; } = DateTime.Now;
     public List<StgEpicRow> Epics { get; set; } = new();
     public List<ProdCardRow> ProdCards { get; set; } = new();
+    /// <summary>Keys de todos los issues del sprint usado al generar el reporte (para refresh parcial).</summary>
+    public HashSet<string> SprintKeys { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Épicas omitidas del reporte por tener label stg_not_required.</summary>
+    public List<StgIssueRow> ExcludedEpics { get; set; } = new();
 
     public int TotalEpics => Epics.Count;
     public int WithStg => Epics.Count(e => e.HasStgCard);
@@ -34,6 +38,8 @@ public class StgEpicRow
     public StgAlignment Alignment { get; set; }
     public List<StgIssueRow> MissingFromStg { get; set; } = new();
     public List<StgIssueRow> ExtraInStg { get; set; } = new();
+    /// <summary>Issues excluidos del control STG por tener label stg_not_required.</summary>
+    public List<StgIssueRow> ExcludedIssues { get; set; } = new();
 }
 
 public class ProdCardRow
