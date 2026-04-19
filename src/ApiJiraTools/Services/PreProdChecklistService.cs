@@ -65,6 +65,11 @@ public sealed class PreProdChecklistService
 
         foreach (var epic in epics)
         {
+            // Fetch completo de la épica para tener labels
+            var fullEpic = await _jiraService.GetIssueByKeyAsync(epic.Key);
+            if (HasLabel(fullEpic, "stg_not_required"))
+                continue;
+
             var children = await _jiraService.GetEpicChildIssuesAsync(epic.Key);
 
             var stgCard = children.FirstOrDefault(c =>

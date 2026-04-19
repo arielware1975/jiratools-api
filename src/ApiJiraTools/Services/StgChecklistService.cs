@@ -35,6 +35,38 @@ public sealed class StgChecklistService
                 epicMap[parent.Key] = parent;
         }
 
+        // Para obtener labels de las épicas (sprintIssues.Parent no siempre trae labels),
+        // hacemos fetch completo de cada épica en paralelo.
+        var fetchedEpics = new Dictionary<string, JiraIssue>(StringComparer.OrdinalIgnoreCase);
+        var fetchSem = new SemaphoreSlim(4);
+        await Task.WhenAll(epicMap.Keys.Select(async ek =>
+        {
+            await fetchSem.WaitAsync();
+            try
+            {
+                var full = await _jiraService.GetIssueByKeyAsync(ek);
+                lock (fetchedEpics) fetchedEpics[ek] = full;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "No se pudo traer detalle de épica {EpicKey}", ek);
+            }
+            finally { fetchSem.Release(); }
+        }));
+
+        // Excluir épicas con label stg_not_required
+        var excludedByLabel = fetchedEpics
+            .Where(kv => HasLabel(kv.Value, "stg_not_required"))
+            .Select(kv => kv.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var k in excludedByLabel)
+            epicMap.Remove(k);
+
+        if (excludedByLabel.Count > 0)
+            _logger.LogInformation("StgChecklist: {Count} épica(s) excluida(s) por label stg_not_required: {Keys}",
+                excludedByLabel.Count, string.Join(", ", excludedByLabel));
+
         var report = new StgChecklistReport
         {
             SprintName = sprintName,
@@ -235,4 +267,8 @@ public sealed class StgChecklistService
             || s.StartsWith("Pasaje", StringComparison.OrdinalIgnoreCase)
             || s.StartsWith("PROD", StringComparison.OrdinalIgnoreCase);
     }
+
+    private static bool HasLabel(JiraIssue? issue, string label)
+        => issue?.Fields?.Labels != null
+           && issue.Fields.Labels.Any(x => string.Equals(x, label, StringComparison.OrdinalIgnoreCase));
 }
