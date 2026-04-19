@@ -8,7 +8,9 @@ source ~/jiratools-api/.env
 
 sudo docker build --no-cache -t jiratools-api .
 sudo docker rm -f jiratools-api
+mkdir -p ~/jiratools-data
 sudo docker run -d -p 8080:8080 \
+  -v ~/jiratools-data:/app/data \
   -e Jira__BaseUrl=https://easy-cash.atlassian.net \
   -e Jira__Email=ariel.garcia@finket.com.ar \
   -e Jira__ApiToken=$JIRA_API_TOKEN \
