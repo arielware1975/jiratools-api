@@ -1435,9 +1435,11 @@ public class TelegramBotService : BackgroundService
         sb.AppendLine($"  ✅ Alineadas: {report.Aligned}");
         sb.AppendLine($"  ⚠️ Desalineadas: {report.Misaligned}");
         sb.AppendLine($"  ❌ Sin STG: {report.WithoutStg}");
+        if (report.ExcludedEpics.Count > 0)
+            sb.AppendLine($"  🚫 Excluidas \\(`stg_not_required`\\): {report.ExcludedEpics.Count}");
         sb.AppendLine();
 
-        if (report.Epics.Count == 0)
+        if (report.Epics.Count == 0 && report.ExcludedEpics.Count == 0)
         {
             sb.AppendLine("_No se encontraron épicas con issues en el sprint\\._");
             return sb.ToString();
@@ -1486,6 +1488,26 @@ public class TelegramBotService : BackgroundService
                     sb.AppendLine($"     • {LinkMd(e.Key)} — {EscapeMd(Truncate(e.Summary, 40))}");
             }
 
+            if (epic.ExcludedIssues.Count > 0)
+            {
+                sb.AppendLine($"   🚫 {epic.ExcludedIssues.Count} issue{(epic.ExcludedIssues.Count > 1 ? "s" : "")} excluid{(epic.ExcludedIssues.Count > 1 ? "os" : "o")} por `stg_not_required`:");
+                foreach (var x in epic.ExcludedIssues.Take(5))
+                    sb.AppendLine($"     • {LinkMd(x.Key)} — {EscapeMd(Truncate(x.Summary, 40))}");
+                if (epic.ExcludedIssues.Count > 5)
+                    sb.AppendLine($"     _\\.\\.\\.y {epic.ExcludedIssues.Count - 5} más_");
+            }
+
+            sb.AppendLine();
+        }
+
+        // Épicas excluidas por stg_not_required
+        if (report.ExcludedEpics.Count > 0)
+        {
+            sb.AppendLine("*🚫 Épicas excluidas \\(`stg_not_required`\\):*");
+            foreach (var ex in report.ExcludedEpics.Take(10))
+                sb.AppendLine($"  • {LinkMd(ex.Key)} — {EscapeMd(Truncate(ex.Summary, 50))}");
+            if (report.ExcludedEpics.Count > 10)
+                sb.AppendLine($"  _\\.\\.\\.y {report.ExcludedEpics.Count - 10} más_");
             sb.AppendLine();
         }
 
@@ -1510,6 +1532,7 @@ public class TelegramBotService : BackgroundService
         sb.AppendLine("📛 Dev issues no cubiertos: issues de dev de la épica que la card STG no linkea \\(is blocked by\\) y por lo tanto no se van a testear en STG");
         sb.AppendLine("✔ junto al key: el issue ya está finalizado pero aún así debería estar linkeado a la STG");
         sb.AppendLine("➕ Extra en STG: issues linkeados en la STG que no corresponden a ningún dev issue pendiente");
+        sb.AppendLine("🚫 Excluido por `stg_not_required`: épica o issue con ese label \\— no cuenta en el control STG");
 
         return sb.ToString();
     }
