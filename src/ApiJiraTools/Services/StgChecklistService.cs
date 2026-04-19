@@ -94,22 +94,52 @@ public sealed class StgChecklistService
                 (c.Fields?.Summary ?? string.Empty).TrimStart()
                 .StartsWith("STG", StringComparison.OrdinalIgnoreCase));
 
-            // Dev issues = hijos que NO son operacionales (STG, Pasaje, PROD) y NO están finalizados
+            // Dev issues = hijos que NO son operacionales y NO tienen label stg_not_required.
+            // Los finalizados SÍ se incluyen: deben estar linkeados a la STG aunque estén cerrados.
             var devIssues = allChildren
-                .Where(c => !IsOperationalTask(c) && !IsDone(c))
+                .Where(c => !IsOperationalTask(c) && !HasLabel(c, "stg_not_required"))
                 .ToList();
 
-            // Issues cubiertos por la card STG vienen de sus IssueLinks
+            // Issues cubiertos por la card STG vienen de sus IssueLinks.
+            // Para chequear label stg_not_required en issues linkeados (que pueden no ser
+            // hijos directos de la épica), hay que hacer fetch completo — issueLinks
+            // no trae labels.
             var stgRows = new List<StgIssueRow>();
             if (stgCard != null)
             {
+                // Cache local: si el issue linkeado es un hijo directo de la épica ya lo tenemos
+                var childMap = allChildren.ToDictionary(c => c.Key, StringComparer.OrdinalIgnoreCase);
+
                 foreach (var link in stgCard.Fields?.IssueLinks ?? Enumerable.Empty<JiraIssueLink>())
                 {
                     var linked = link.InwardIssue ?? link.OutwardIssue;
                     if (linked == null) continue;
                     if (ExcludedKeys.Contains(linked.Key)) continue;
                     if (IsOperationalSummary(linked.Fields?.Summary ?? string.Empty)) continue;
-                    if (IsDoneLinked(linked)) continue;
+
+                    // Verificar label stg_not_required en el issue linkeado.
+                    // Si es hijo directo de la épica ya tenemos los labels en allChildren.
+                    bool skipByLabel;
+                    if (childMap.TryGetValue(linked.Key, out var asChild))
+                    {
+                        skipByLabel = HasLabel(asChild, "stg_not_required");
+                    }
+                    else
+                    {
+                        // No es hijo directo: traer el issue completo para verificar labels
+                        try
+                        {
+                            var full = await _jiraService.GetIssueByKeyAsync(linked.Key);
+                            skipByLabel = HasLabel(full, "stg_not_required");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "No se pudo traer {Key} para verificar label stg_not_required", linked.Key);
+                            skipByLabel = false;
+                        }
+                    }
+                    if (skipByLabel) continue;
+
                     stgRows.Add(new StgIssueRow
                     {
                         Key = linked.Key,
@@ -118,6 +148,7 @@ public sealed class StgChecklistService
                         IssueType = linked.Fields?.IssueType?.Name ?? string.Empty,
                         Assignee = string.Empty,
                         IsInSprint = sprintKeys.Contains(linked.Key),
+                        IsDone = IsDoneLinked(linked),
                     });
                 }
             }
@@ -218,6 +249,7 @@ public sealed class StgChecklistService
         IssueType = issue.Fields?.IssueType?.Name ?? string.Empty,
         StoryPoints = GetSp(issue),
         IsInSprint = isInSprint,
+        IsDone = IsDone(issue),
     };
 
     private double GetSp(JiraIssue issue)

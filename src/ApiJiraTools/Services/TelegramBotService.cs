@@ -1471,7 +1471,10 @@ public class TelegramBotService : BackgroundService
             {
                 sb.AppendLine($"   📛 {epic.MissingFromStg.Count} dev issue{(epic.MissingFromStg.Count > 1 ? "s" : "")} no cubiert{(epic.MissingFromStg.Count > 1 ? "os" : "o")}:");
                 foreach (var m in epic.MissingFromStg.Take(5))
-                    sb.AppendLine($"     • {LinkMd(m.Key)} — {EscapeMd(Truncate(m.Summary, 40))}");
+                {
+                    var doneMark = m.IsDone ? " ✔" : "";
+                    sb.AppendLine($"     • {LinkMd(m.Key)}{doneMark} — {EscapeMd(Truncate(m.Summary, 40))}");
+                }
                 if (epic.MissingFromStg.Count > 5)
                     sb.AppendLine($"     _\\.\\.\\.y {epic.MissingFromStg.Count - 5} más_");
             }
@@ -1505,6 +1508,7 @@ public class TelegramBotService : BackgroundService
         sb.AppendLine("❌ Sin card STG: la épica no tiene card STG asociada");
         sb.AppendLine("🏃 En sprint: la card STG está en el sprint activo");
         sb.AppendLine("📛 Dev issues no cubiertos: issues de dev de la épica que la card STG no linkea \\(is blocked by\\) y por lo tanto no se van a testear en STG");
+        sb.AppendLine("✔ junto al key: el issue ya está finalizado pero aún así debería estar linkeado a la STG");
         sb.AppendLine("➕ Extra en STG: issues linkeados en la STG que no corresponden a ningún dev issue pendiente");
 
         return sb.ToString();

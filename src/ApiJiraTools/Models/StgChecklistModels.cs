@@ -54,6 +54,7 @@ public class StgIssueRow
     public double StoryPoints { get; set; }
     public bool IsInSprint { get; set; }
     public bool IsMatched { get; set; }
+    public bool IsDone { get; set; }
 }
 
 public class PreProdChecklistReport
