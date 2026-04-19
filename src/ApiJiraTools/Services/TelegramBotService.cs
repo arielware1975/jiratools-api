@@ -100,6 +100,8 @@ public class TelegramBotService : BackgroundService
                 "/analyze" => await HandleAnalyze(arg, chatId, bot, ct), // recibe issue key
                 "/review" => await HandleReview(arg, chatId, bot, ct),  // recibe issue key
                 "/scope" => await HandleScope(projectArg, ct),
+                "/checkstg" => await HandleCheckStg(projectArg, ct),
+                "/checkprod" => await HandleCheckProd(projectArg, ct),
                 "/resumen" => await HandleResumen(arg, chatId, bot, ct),
                 "/ideas" => await HandleIdeas(projectArg, ct),
                 _ => null
@@ -178,6 +180,8 @@ public class TelegramBotService : BackgroundService
 
             *🚀 Release*
             `/release` — Auditoría del release actual
+            `/checkstg` — Verifica cards STG vs dev issues
+            `/checkprod` — Checklist GO/NO\-GO para Producción
 
             *💡 Discovery*
             `/ideas` — Ideas en Ahora y Siguiente
@@ -1407,6 +1411,143 @@ public class TelegramBotService : BackgroundService
 
     private static string Truncate(string text, int max)
         => text.Length <= max ? text : text[..max] + "...";
+
+    private async Task<string> HandleCheckStg(string? projectKey, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(projectKey))
+            return NeedProjectMsg("/checkstg");
+
+        using var scope = _services.CreateScope();
+        var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
+        var stgService = scope.ServiceProvider.GetRequiredService<StgChecklistService>();
+
+        var sprint = await FindActiveSprint(projectKey, jira);
+        if (sprint == null)
+            return $"No hay sprint activo en `{EscapeMd(projectKey.ToUpperInvariant())}`\\.";
+
+        var report = await stgService.BuildAsync(sprint.Id, sprint.Name);
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"*🧪 Checklist STG \\— {EscapeMd(sprint.Name)}*\n");
+
+        // Resumen
+        sb.AppendLine($"*Total épicas:* {report.TotalEpics}");
+        sb.AppendLine($"  ✅ Alineadas: {report.Aligned}");
+        sb.AppendLine($"  ⚠️ Desalineadas: {report.Misaligned}");
+        sb.AppendLine($"  ❌ Sin STG: {report.WithoutStg}");
+        sb.AppendLine();
+
+        if (report.Epics.Count == 0)
+        {
+            sb.AppendLine("_No se encontraron épicas con issues en el sprint\\._");
+            return sb.ToString();
+        }
+
+        // Por épica
+        foreach (var epic in report.Epics)
+        {
+            string icon = epic.Alignment switch
+            {
+                StgAlignment.Ok => "✅",
+                StgAlignment.Partial => "⚠️",
+                StgAlignment.Empty => "🟡",
+                StgAlignment.NoCard => "❌",
+                _ => "❓"
+            };
+
+            sb.AppendLine($"{icon} {LinkMd(epic.EpicKey)} — {EscapeMd(Truncate(epic.EpicSummary, 50))}");
+
+            if (epic.HasStgCard)
+            {
+                var stgInSprintMark = epic.StgInSprint ? " 🏃" : "";
+                sb.AppendLine($"   STG: {LinkMd(epic.StgKey)} \\| {EscapeMd(epic.StgStatus)}{stgInSprintMark}");
+            }
+            else
+            {
+                sb.AppendLine("   _Sin card STG_");
+            }
+
+            if (epic.MissingFromStg.Count > 0)
+            {
+                sb.AppendLine($"   📛 {epic.MissingFromStg.Count} dev issue{(epic.MissingFromStg.Count > 1 ? "s" : "")} no cubiert{(epic.MissingFromStg.Count > 1 ? "os" : "o")}:");
+                foreach (var m in epic.MissingFromStg.Take(5))
+                    sb.AppendLine($"     • {LinkMd(m.Key)} — {EscapeMd(Truncate(m.Summary, 40))}");
+                if (epic.MissingFromStg.Count > 5)
+                    sb.AppendLine($"     _\\.\\.\\.y {epic.MissingFromStg.Count - 5} más_");
+            }
+
+            if (epic.ExtraInStg.Count > 0)
+            {
+                sb.AppendLine($"   ➕ {epic.ExtraInStg.Count} extra en STG \\(no match con dev\\):");
+                foreach (var e in epic.ExtraInStg.Take(5))
+                    sb.AppendLine($"     • {LinkMd(e.Key)} — {EscapeMd(Truncate(e.Summary, 40))}");
+            }
+
+            sb.AppendLine();
+        }
+
+        // PROD cards
+        if (report.ProdCards.Count > 0)
+        {
+            sb.AppendLine("*🚀 Cards PROD del sprint:*");
+            foreach (var pc in report.ProdCards)
+            {
+                sb.AppendLine($"  {LinkMd(pc.Key)} — {EscapeMd(Truncate(pc.Summary, 40))} \\| {EscapeMd(pc.Status)}");
+                sb.AppendLine($"  Cubre {pc.LinkedStgCards.Count} card{(pc.LinkedStgCards.Count != 1 ? "s" : "")} STG");
+            }
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("_Leyenda: ✅ OK \\| ⚠️ Parcial \\| 🟡 STG vacío \\| ❌ Sin card STG \\| 🏃 En sprint_");
+
+        return sb.ToString();
+    }
+
+    private async Task<string> HandleCheckProd(string? projectKey, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(projectKey))
+            return NeedProjectMsg("/checkprod");
+
+        using var scope = _services.CreateScope();
+        var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
+        var prodService = scope.ServiceProvider.GetRequiredService<PreProdChecklistService>();
+
+        var sprint = await FindActiveSprint(projectKey, jira);
+        if (sprint == null)
+            return $"No hay sprint activo en `{EscapeMd(projectKey.ToUpperInvariant())}`\\.";
+
+        var sprintStart = sprint.StartDate?.LocalDateTime ?? DateTime.Today;
+        var report = await prodService.BuildAsync(projectKey.ToUpperInvariant(), sprint.Id, sprint.Name, sprintStart);
+
+        var sb = new StringBuilder();
+        var verdictEmoji = report.IsGo ? "🟢" : "🔴";
+        sb.AppendLine($"{verdictEmoji} *Checklist PROD \\— {EscapeMd(sprint.Name)}*");
+        sb.AppendLine($"*Veredicto:* {EscapeMd(report.Verdict)}");
+        if (report.DeployDate.HasValue)
+            sb.AppendLine($"*Deploy estimado:* {EscapeMd(report.DeployDate.Value.ToString("dd/MM/yyyy"))}");
+        sb.AppendLine();
+
+        int passed = report.Checks.Count(c => c.Passed);
+        sb.AppendLine($"*{passed}/{report.Checks.Count} checks pasados*\n");
+
+        foreach (var check in report.Checks)
+        {
+            var icon = check.Passed ? "✅" : "❌";
+            sb.AppendLine($"{icon} *{EscapeMd(check.Name)}*");
+            sb.AppendLine($"   {EscapeMd(check.Detail)}");
+
+            if (!check.Passed && check.FailedIssueKeys.Count > 0 && check.FailedIssueKeys[0] != "(ninguna)")
+            {
+                foreach (var key in check.FailedIssueKeys.Take(8))
+                    sb.AppendLine($"     • {LinkMd(key)}");
+                if (check.FailedIssueKeys.Count > 8)
+                    sb.AppendLine($"     _\\.\\.\\.y {check.FailedIssueKeys.Count - 8} más_");
+            }
+            sb.AppendLine();
+        }
+
+        return sb.ToString();
+    }
 
     private async Task<string> HandleTree(string? issueKey, CancellationToken ct)
     {
