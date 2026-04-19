@@ -150,7 +150,9 @@ public class AlertSchedulerService : BackgroundService
                     sb.AppendLine("   _Sin card STG_");
             }
 
-            sb.AppendLine("\n_Usá `/checkstg` para ver el detalle completo_");
+            sb.AppendLine();
+            sb.AppendLine("_📛 Dev issues no cubiertos \\= issues de dev de la épica que la card STG no linkea \\(is blocked by\\), no se van a testear_");
+            sb.AppendLine("_Usá `/checkstg` para ver el detalle completo_");
 
             foreach (var chatId in chatIds)
             {

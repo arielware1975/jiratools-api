@@ -1498,7 +1498,14 @@ public class TelegramBotService : BackgroundService
             sb.AppendLine();
         }
 
-        sb.AppendLine("_Leyenda: ✅ OK \\| ⚠️ Parcial \\| 🟡 STG vacío \\| ❌ Sin card STG \\| 🏃 En sprint_");
+        sb.AppendLine("*Leyenda:*");
+        sb.AppendLine("✅ OK: la card STG cubre todos los dev issues de la épica");
+        sb.AppendLine("⚠️ Parcial: la STG cubre algunos pero faltan dev issues");
+        sb.AppendLine("🟡 STG vacío: la card existe pero no tiene issues linkeados");
+        sb.AppendLine("❌ Sin card STG: la épica no tiene card STG asociada");
+        sb.AppendLine("🏃 En sprint: la card STG está en el sprint activo");
+        sb.AppendLine("📛 Dev issues no cubiertos: issues de dev de la épica que la card STG no linkea \\(is blocked by\\) y por lo tanto no se van a testear en STG");
+        sb.AppendLine("➕ Extra en STG: issues linkeados en la STG que no corresponden a ningún dev issue pendiente");
 
         return sb.ToString();
     }
