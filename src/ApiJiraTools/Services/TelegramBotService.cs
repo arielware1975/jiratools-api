@@ -102,6 +102,13 @@ public class TelegramBotService : BackgroundService
                 "/scope" => await HandleScope(projectArg, ct),
                 "/checkstg" => await HandleCheckStg(projectArg, ct),
                 "/checkprod" => await HandleCheckProd(projectArg, ct),
+                "/recordar" => await HandleRecordar(arg, chatId, bot, ct),
+                "/recordatorios" => HandleListReminders(chatId),
+                "/olvidar" => HandleForgetReminder(arg, chatId),
+                "/guardar" => HandleSaveNote(arg, chatId),
+                "/dato" => HandleGetNote(arg, chatId),
+                "/datos" => HandleListNotes(chatId),
+                "/borrar" => HandleDeleteNote(arg, chatId),
                 "/resumen" => await HandleResumen(arg, chatId, bot, ct),
                 "/ideas" => await HandleIdeas(projectArg, ct),
                 _ => null
@@ -193,6 +200,17 @@ public class TelegramBotService : BackgroundService
 
             *🔔 Alertas*
             `/alerts` — Chequeo de alertas ahora
+
+            *⏰ Recordatorios*
+            `/recordar <texto>` — Ej: _recordame pagar el crédito 2 días hábiles antes del 25 de cada mes a las 9_
+            `/recordatorios` — Lista tus recordatorios
+            `/olvidar <id>` — Elimina un recordatorio
+
+            *📒 Datos guardados*
+            `/guardar cuit bitultans: 30\-12345678\-9` — Guarda un dato
+            `/dato cuit bitultans` — Busca un dato
+            `/datos` — Lista todos tus datos
+            `/borrar cuit bitultans` — Elimina un dato
 
             _Tu chat ID: `{chatId}`_
             """;
@@ -1581,6 +1599,184 @@ public class TelegramBotService : BackgroundService
         }
 
         return sb.ToString();
+    }
+
+    // ── Recordatorios ────────────────────────────────────────────────────
+
+    private async Task<string?> HandleRecordar(string? arg, long chatId, ITelegramBotClient bot, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(arg))
+        {
+            await bot.SendMessage(chatId, "Uso: `/recordar <texto>`\nEj: `/recordar pagar alquiler el 5 de cada mes a las 10am`", parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+            return null;
+        }
+
+        await bot.SendMessage(chatId, "🤖 Procesando\\.\\.\\.", parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+
+        using var scope = _services.CreateScope();
+        var parser = scope.ServiceProvider.GetRequiredService<ReminderParser>();
+        var store = scope.ServiceProvider.GetRequiredService<ReminderStore>();
+
+        var (rem, err) = await parser.ParseAsync(arg, chatId);
+        if (rem == null)
+            return $"⚠️ {EscapeMd(err ?? "No pude procesar el pedido.")}";
+
+        store.Add(rem);
+
+        var summary = FormatSchedule(rem.Schedule);
+        return $"✅ Recordatorio guardado \\(id `{EscapeMd(rem.Id)}`\\)\n\n*Mensaje:* {EscapeMd(rem.Message)}\n*Cuándo:* {EscapeMd(summary)}";
+    }
+
+    private string HandleListReminders(long chatId)
+    {
+        using var scope = _services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<ReminderStore>();
+        var list = store.ForChat(chatId).Where(r => r.Enabled).ToList();
+
+        if (list.Count == 0) return "_No tenés recordatorios activos\\._";
+
+        var sb = new StringBuilder($"*⏰ Recordatorios activos* \\({list.Count}\\)\n\n");
+        foreach (var r in list.OrderBy(x => x.CreatedAt))
+        {
+            sb.AppendLine($"`{EscapeMd(r.Id)}` — {EscapeMd(r.Message)}");
+            sb.AppendLine($"   _{EscapeMd(FormatSchedule(r.Schedule))}_");
+        }
+        sb.AppendLine("\n_Usá `/olvidar <id>` para eliminar uno\\._");
+        return sb.ToString();
+    }
+
+    private string HandleForgetReminder(string? arg, long chatId)
+    {
+        if (string.IsNullOrWhiteSpace(arg))
+            return "Uso: `/olvidar <id>` \\— el id lo ves con `/recordatorios`";
+
+        using var scope = _services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<ReminderStore>();
+        return store.Remove(arg.Trim(), chatId)
+            ? $"🗑️ Recordatorio `{EscapeMd(arg.Trim())}` eliminado\\."
+            : $"⚠️ No encontré un recordatorio con id `{EscapeMd(arg.Trim())}`\\.";
+    }
+
+    private static string FormatSchedule(ReminderSchedule s)
+    {
+        var hhmm = s.Time ?? "09:00";
+        switch (s.Type.ToLowerInvariant())
+        {
+            case "once":
+                return $"una vez el {s.Date} a las {hhmm}";
+            case "daily":
+                return $"todos los días a las {hhmm}";
+            case "weekly":
+                return $"todos los {DayOfWeekEs(s.DayOfWeek)} a las {hhmm}";
+            case "monthly":
+                if (s.OffsetBusinessDays != 0)
+                {
+                    var abs = Math.Abs(s.OffsetBusinessDays);
+                    var dir = s.OffsetBusinessDays < 0 ? "antes" : "después";
+                    return $"{abs} día{(abs != 1 ? "s" : "")} hábil{(abs != 1 ? "es" : "")} {dir} del día {s.DayOfMonth} de cada mes, a las {hhmm}";
+                }
+                return $"el día {s.DayOfMonth} de cada mes a las {hhmm}";
+            case "yearly":
+                return $"todos los {s.DayOfMonth} de {MonthEs(s.Month ?? 1)} a las {hhmm}";
+            default:
+                return $"({s.Type})";
+        }
+    }
+
+    private static string DayOfWeekEs(string? dow) => (dow ?? "").ToLowerInvariant() switch
+    {
+        "mon" or "monday" or "lunes" => "lunes",
+        "tue" or "tuesday" or "martes" => "martes",
+        "wed" or "wednesday" or "miercoles" or "miércoles" => "miércoles",
+        "thu" or "thursday" or "jueves" => "jueves",
+        "fri" or "friday" or "viernes" => "viernes",
+        "sat" or "saturday" or "sabado" or "sábado" => "sábados",
+        "sun" or "sunday" or "domingo" => "domingos",
+        _ => dow ?? ""
+    };
+
+    private static string MonthEs(int m) => m switch
+    {
+        1 => "enero", 2 => "febrero", 3 => "marzo", 4 => "abril",
+        5 => "mayo", 6 => "junio", 7 => "julio", 8 => "agosto",
+        9 => "septiembre", 10 => "octubre", 11 => "noviembre", 12 => "diciembre",
+        _ => m.ToString()
+    };
+
+    // ── Notas / datos ────────────────────────────────────────────────────
+
+    private string HandleSaveNote(string? arg, long chatId)
+    {
+        if (string.IsNullOrWhiteSpace(arg))
+            return "Uso: `/guardar <clave>: <valor>`\nEj: `/guardar cuit bitultans: 30-12345678-9`";
+
+        string key, value;
+        var idx = arg.IndexOf(':');
+        if (idx > 0)
+        {
+            key = arg[..idx].Trim();
+            value = arg[(idx + 1)..].Trim();
+        }
+        else
+        {
+            // Fallback: primera palabra = key, resto = value
+            var parts = arg.Trim().Split(' ', 2);
+            if (parts.Length < 2) return "Uso: `/guardar <clave>: <valor>`";
+            key = parts[0];
+            value = parts[1];
+        }
+
+        if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+            return "Uso: `/guardar <clave>: <valor>`";
+
+        using var scope = _services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<NoteStore>();
+        var note = store.Add(chatId, key, value);
+        return $"✅ Guardado\n\n*{EscapeMd(note.Key)}:* `{EscapeMd(note.Value)}`";
+    }
+
+    private string HandleGetNote(string? arg, long chatId)
+    {
+        if (string.IsNullOrWhiteSpace(arg))
+            return "Uso: `/dato <texto>` — busca datos cuya clave contenga el texto";
+
+        using var scope = _services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<NoteStore>();
+        var results = store.Search(chatId, arg);
+
+        if (results.Count == 0)
+            return $"_No encontré datos con `{EscapeMd(arg)}`\\._";
+
+        var sb = new StringBuilder();
+        foreach (var n in results)
+            sb.AppendLine($"*{EscapeMd(n.Key)}:* `{EscapeMd(n.Value)}`");
+        return sb.ToString();
+    }
+
+    private string HandleListNotes(long chatId)
+    {
+        using var scope = _services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<NoteStore>();
+        var list = store.ForChat(chatId).OrderBy(n => n.Key).ToList();
+
+        if (list.Count == 0) return "_No tenés datos guardados todavía\\._";
+
+        var sb = new StringBuilder($"*📒 Datos guardados* \\({list.Count}\\)\n\n");
+        foreach (var n in list)
+            sb.AppendLine($"*{EscapeMd(n.Key)}:* `{EscapeMd(n.Value)}`");
+        return sb.ToString();
+    }
+
+    private string HandleDeleteNote(string? arg, long chatId)
+    {
+        if (string.IsNullOrWhiteSpace(arg))
+            return "Uso: `/borrar <clave>`";
+
+        using var scope = _services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<NoteStore>();
+        return store.Remove(chatId, arg.Trim())
+            ? $"🗑️ Eliminado: `{EscapeMd(arg.Trim())}`"
+            : $"⚠️ No encontré datos con clave `{EscapeMd(arg.Trim())}`\\.";
     }
 
     private async Task<string> HandleTree(string? issueKey, CancellationToken ct)
