@@ -75,6 +75,11 @@ public class AlertSchedulerService : BackgroundService
             try
             {
                 using var scope = _services.CreateScope();
+
+                // 1. Resumen matutino del sprint + burndown image
+                await SendMorningStatusAsync(bot, chatIds, project, scope, ct);
+
+                // 2. Alertas diarias
                 var alertService = scope.ServiceProvider.GetRequiredService<AlertService>();
                 var message = await alertService.BuildDailyAlertAsync(project);
 
@@ -91,13 +96,91 @@ public class AlertSchedulerService : BackgroundService
                     _logger.LogInformation("Sin alertas para {Project}.", project);
                 }
 
-                // STG check diario
+                // 3. STG check diario
                 await SendStgCheckAsync(bot, chatIds, project, scope, ct);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error enviando alerta para {Project}.", project);
             }
+        }
+    }
+
+    /// <summary>
+    /// Envía un resumen matutino: estado del sprint + burndown PNG.
+    /// </summary>
+    private async Task SendMorningStatusAsync(TelegramBotClient bot, List<long> chatIds, string project, IServiceScope scope, CancellationToken ct)
+    {
+        try
+        {
+            var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
+            var closure = scope.ServiceProvider.GetRequiredService<SprintClosureService>();
+            var burndown = scope.ServiceProvider.GetRequiredService<BurndownService>();
+            var chart = scope.ServiceProvider.GetRequiredService<BurndownChartService>();
+
+            var sprints = await jira.GetSprintsByProjectAsync(project);
+            var sprint = sprints.FirstOrDefault(s => s.State.Equals("active", StringComparison.OrdinalIgnoreCase));
+            if (sprint == null)
+            {
+                _logger.LogInformation("Sin sprint activo en {Project}, se omite resumen matutino.", project);
+                return;
+            }
+
+            var issues = await jira.GetSprintIssuesDetailedAsync(sprint.Id);
+            var report = await closure.BuildAsync(new Models.JiraProject { Key = project }, sprint);
+
+            var start = sprint.StartDate?.DateTime ?? DateTime.UtcNow.AddDays(-14);
+            var end = sprint.EndDate?.DateTime ?? DateTime.UtcNow;
+            var bd = burndown.Build(issues, start, end);
+
+            double pct = report.CommittedSp > 0 ? report.DoneSp / report.CommittedSp * 100 : 0;
+            var daysLeft = sprint.EndDate.HasValue
+                ? Math.Max(0, (int)(sprint.EndDate.Value - DateTimeOffset.UtcNow).TotalDays)
+                : 0;
+
+            var last = bd.DataPoints.LastOrDefault(x => x.RemainingActual.HasValue);
+            string trend = "—";
+            if (last != null)
+            {
+                var diff = last.RemainingActual!.Value - last.RemainingIdeal;
+                trend = diff <= 0 ? "✅ al día" : (diff <= 3 ? "⚠️ leve atraso" : "🔴 atrasado");
+            }
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"🌅 *Buen día — {EscapeMd(sprint.Name)}*\n");
+            sb.AppendLine($"📅 Días restantes: {daysLeft}");
+            sb.AppendLine($"📊 Velocidad: {EscapeMd($"{report.DoneSp:0.#}/{report.CommittedSp:0.#}")} SP \\({EscapeMd($"{pct:0}")}%\\)");
+            sb.AppendLine($"✅ Issues: {report.DoneIssues}/{report.TotalIssues} completados");
+            sb.AppendLine($"♻️ Carry\\-over proyectado: {report.CarryOverToDo.Count + report.CarryOverInProgress.Count} issues \\({EscapeMd($"{report.CarryOverTotalSp:0.#}")} SP\\)");
+            sb.AppendLine($"🐛 Bugs abiertos: {report.OpenBugsAtClose}");
+            sb.AppendLine($"📈 Burndown: {trend}");
+
+            byte[] png = Array.Empty<byte>();
+            try { png = chart.RenderPng(bd, $"Burndown — {sprint.Name}"); }
+            catch (Exception ex) { _logger.LogWarning(ex, "No se pudo generar burndown PNG"); }
+
+            foreach (var chatId in chatIds)
+            {
+                if (png.Length > 0)
+                {
+                    using var stream = new MemoryStream(png);
+                    await bot.SendPhoto(
+                        chatId,
+                        Telegram.Bot.Types.InputFile.FromStream(stream, "burndown.png"),
+                        caption: sb.ToString(),
+                        parseMode: ParseMode.MarkdownV2,
+                        cancellationToken: ct);
+                }
+                else
+                {
+                    await bot.SendMessage(chatId, sb.ToString(), parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+                }
+                _logger.LogInformation("Resumen matutino enviado a chat {ChatId} para {Project}.", chatId, project);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error generando resumen matutino para {Project}.", project);
         }
     }
 

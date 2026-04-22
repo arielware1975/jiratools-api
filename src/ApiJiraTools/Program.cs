@@ -9,6 +9,7 @@ builder.Services.Configure<GeminiSettings>(builder.Configuration.GetSection("Gem
 builder.Services.AddScoped<JiraService>();
 builder.Services.AddScoped<SprintClosureService>();
 builder.Services.AddScoped<BurndownService>();
+builder.Services.AddScoped<BurndownChartService>();
 builder.Services.AddScoped<IssueTreeService>();
 builder.Services.AddScoped<AlertService>();
 builder.Services.AddScoped<ReleaseAuditService>();

@@ -92,7 +92,7 @@ public class TelegramBotService : BackgroundService
                 "/alerts" => await HandleAlerts(projectArg, ct),
                 "/status" => await HandleStatus(projectArg, ct),
                 "/velocity" => await HandleVelocity(projectArg, ct),
-                "/burndown" => await HandleBurndown(projectArg, ct),
+                "/burndown" => await HandleBurndown(projectArg, chatId, bot, ct),
                 "/tree" => await HandleTree(arg, ct),             // recibe issue key
                 "/recent" => await HandleRecent(projectArg, ct),
                 "/epic" => await HandleEpic(arg, ct),             // recibe issue key
@@ -1244,7 +1244,7 @@ public class TelegramBotService : BackgroundService
         return sb.ToString();
     }
 
-    private async Task<string> HandleBurndown(string? projectKey, CancellationToken ct)
+    private async Task<string?> HandleBurndown(string? projectKey, long chatId, ITelegramBotClient bot, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(projectKey))
             return NeedProjectMsg("/burndown");
@@ -1252,6 +1252,7 @@ public class TelegramBotService : BackgroundService
         using var scope = _services.CreateScope();
         var jira = scope.ServiceProvider.GetRequiredService<JiraService>();
         var burndown = scope.ServiceProvider.GetRequiredService<BurndownService>();
+        var chart = scope.ServiceProvider.GetRequiredService<BurndownChartService>();
 
         var sprint = await FindActiveSprint(projectKey, jira);
         if (sprint == null)
@@ -1263,21 +1264,40 @@ public class TelegramBotService : BackgroundService
 
         var data = burndown.Build(issues, start, end);
 
-        var sb = new StringBuilder($"*Burndown \\- {EscapeMd(sprint.Name)}*\n");
-        sb.AppendLine($"Total: {EscapeMd($"{data.TotalSp}")} SP\n");
-
-        // Mostrar solo los puntos con datos reales
-        foreach (var p in data.DataPoints.Where(x => x.RemainingActual.HasValue))
+        // Generar PNG
+        byte[] png;
+        try { png = chart.RenderPng(data, $"Burndown — {sprint.Name}"); }
+        catch (Exception ex)
         {
-            var bar = new string('█', (int)(p.RemainingActual!.Value / Math.Max(1, data.TotalSp) * 20));
-            sb.AppendLine($"`{p.Date:dd/MM}` {bar} {EscapeMd($"{p.RemainingActual:0.#}")}");
+            _logger.LogWarning(ex, "Error generando PNG de burndown");
+            png = Array.Empty<byte>();
         }
 
+        // Caption: resumen corto
         var last = data.DataPoints.LastOrDefault(x => x.RemainingActual.HasValue);
+        var caption = new StringBuilder($"*Burndown \\- {EscapeMd(sprint.Name)}*\n");
+        caption.AppendLine($"Total: {EscapeMd($"{data.TotalSp:0.#}")} SP");
         if (last != null)
-            sb.AppendLine($"\n*Restante:* {EscapeMd($"{last.RemainingActual:0.#}")} SP \\(ideal: {EscapeMd($"{last.RemainingIdeal}")}\\)");
+        {
+            var diff = last.RemainingActual!.Value - last.RemainingIdeal;
+            var trend = diff <= 0 ? "✅ al día" : (diff <= 3 ? "⚠️ leve atraso" : "🔴 atrasado");
+            caption.AppendLine($"Restante: {EscapeMd($"{last.RemainingActual:0.#}")} SP \\(ideal: {EscapeMd($"{last.RemainingIdeal:0.#}")}\\) — {trend}");
+        }
 
-        return sb.ToString();
+        if (png.Length == 0)
+        {
+            return caption.ToString();
+        }
+
+        using var stream = new MemoryStream(png);
+        await bot.SendPhoto(
+            chatId,
+            Telegram.Bot.Types.InputFile.FromStream(stream, "burndown.png"),
+            caption: caption.ToString(),
+            parseMode: ParseMode.MarkdownV2,
+            cancellationToken: ct);
+
+        return null;
     }
 
     private async Task<string> HandleScope(string? projectKey, CancellationToken ct)
