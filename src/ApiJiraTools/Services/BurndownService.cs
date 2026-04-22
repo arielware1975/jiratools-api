@@ -6,6 +6,11 @@ public sealed class BurndownService
 {
     private readonly JiraService _jira;
 
+    /// <summary>
+    /// Factor aplicado a los SP de issues carry-over en progreso. 0.3 = cuentan al 30%.
+    /// </summary>
+    public const double CarryOverInProgressFactor = 0.3;
+
     public BurndownService(JiraService jira)
     {
         _jira = jira;
@@ -14,21 +19,33 @@ public sealed class BurndownService
     public BurndownData Build(List<JiraIssue> sprintIssues, DateTime sprintStart, DateTime sprintEnd)
     {
         var today = DateTime.UtcNow.Date;
-        double totalSp = sprintIssues.Sum(GetSp);
+
+        // Sólo trabajo real: excluir cards operacionales (STG, Pasaje, PROD)
+        var workIssues = sprintIssues.Where(i => !IsOperational(i)).ToList();
+
+        // SP proyectado por issue: carry-over en progreso al factor, el resto 100%
+        double SpProjected(JiraIssue i)
+        {
+            var sp = GetSp(i);
+            if (IsCarryOverInProgress(i, sprintStart)) return sp * CarryOverInProgressFactor;
+            return sp;
+        }
+
+        double totalSp = Math.Round(workIssues.Sum(SpProjected), 1);
 
         var days = new List<DateTime>();
         for (var d = sprintStart.Date; d <= sprintEnd.Date; d = d.AddDays(1))
             days.Add(d);
 
-        var resolvedByDay = sprintIssues
+        var resolvedByDay = workIssues
             .Where(i => IsDone(i) && i.Fields?.ResolutionDateValue != null)
             .GroupBy(i => i.Fields!.ResolutionDateValue!.Value.Date)
-            .ToDictionary(g => g.Key, g => g.Sum(GetSp));
+            .ToDictionary(g => g.Key, g => g.Sum(SpProjected));
 
-        var doneNoResolution = sprintIssues
+        var doneNoResolution = workIssues
             .Where(i => IsDone(i) && i.Fields?.ResolutionDateValue == null && i.Fields?.UpdatedDate != null)
             .GroupBy(i => i.Fields!.UpdatedDate!.Value.Date)
-            .ToDictionary(g => g.Key, g => g.Sum(GetSp));
+            .ToDictionary(g => g.Key, g => g.Sum(SpProjected));
 
         foreach (var kv in doneNoResolution)
         {
@@ -65,6 +82,31 @@ public sealed class BurndownService
             TotalSp = totalSp,
             DataPoints = dataPoints,
         };
+    }
+
+    /// <summary>
+    /// Heurística de carry-over: issue en progreso/review y creado antes del inicio del sprint.
+    /// </summary>
+    private static bool IsCarryOverInProgress(JiraIssue issue, DateTime sprintStart)
+    {
+        if (!IsInProgress(issue)) return false;
+        var created = issue?.Fields?.CreatedDate;
+        if (created == null) return false;
+        return created.Value.UtcDateTime < sprintStart.ToUniversalTime();
+    }
+
+    private static bool IsInProgress(JiraIssue issue)
+    {
+        var key = issue?.Fields?.Status?.StatusCategory?.Key;
+        return string.Equals(key, "indeterminate", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsOperational(JiraIssue issue)
+    {
+        var s = (issue?.Fields?.Summary ?? "").TrimStart();
+        return s.StartsWith("STG", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("Pasaje", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("PROD", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsDone(JiraIssue issue)

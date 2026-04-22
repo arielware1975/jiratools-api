@@ -1276,7 +1276,7 @@ public class TelegramBotService : BackgroundService
         // Caption: resumen corto
         var last = data.DataPoints.LastOrDefault(x => x.RemainingActual.HasValue);
         var caption = new StringBuilder($"*Burndown \\- {EscapeMd(sprint.Name)}*\n");
-        caption.AppendLine($"Total: {EscapeMd($"{data.TotalSp:0.#}")} SP");
+        caption.AppendLine($"Total proyectado: {EscapeMd($"{data.TotalSp:0.#}")} SP _\\(carry\\-over en curso al 30%\\)_");
         if (last != null)
         {
             var diff = last.RemainingActual!.Value - last.RemainingIdeal;

@@ -26,7 +26,7 @@ public sealed class BurndownChartService
         using var titleFont = new SKFont(SKTypeface.Default, 22) { Embolden = true };
         canvas.DrawText(title, MarginLeft, 32, SKTextAlign.Left, titleFont, titlePaint);
 
-        var subtitle = $"{data.SprintStart:dd/MM} → {data.SprintEnd:dd/MM}   |   Total: {data.TotalSp:0.#} SP";
+        var subtitle = $"{data.SprintStart:dd/MM} → {data.SprintEnd:dd/MM}   |   Total proyectado: {data.TotalSp:0.#} SP";
         using var subFont = new SKFont(SKTypeface.Default, 13);
         using var subPaint = new SKPaint { Color = SKColors.DarkGray, IsAntialias = true };
         canvas.DrawText(subtitle, MarginLeft, 54, SKTextAlign.Left, subFont, subPaint);
