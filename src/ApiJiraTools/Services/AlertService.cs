@@ -32,14 +32,9 @@ public sealed class AlertService
 
         var alerts = new List<string>();
 
-        // 1. Issues bloqueados (tienen link "is blocked by" con issue no-Done)
-        var blocked = FindBlockedIssues(workIssues);
-        if (blocked.Count > 0)
-        {
-            alerts.Add($"🚫 *{blocked.Count} issue{(blocked.Count > 1 ? "s" : "")} bloqueado{(blocked.Count > 1 ? "s" : "")}:*");
-            foreach (var (issue, blocker) in blocked)
-                alerts.Add($"   `{issue.Key}` bloqueado por `{blocker}`");
-        }
+        // 1. Issues bloqueados: deshabilitado — demasiado ruido con dependencias STG/PROD.
+        // Se detectan con `is blocked by` pero la mayoría son dependencias del flujo normal
+        // de release, no bloqueos reales del equipo.
 
         // 2. Sprint por cerrar
         if (activeSprint.EndDate.HasValue)
