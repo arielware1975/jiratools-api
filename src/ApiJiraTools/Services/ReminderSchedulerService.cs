@@ -2,7 +2,9 @@ using ApiJiraTools.Configuration;
 using ApiJiraTools.Models;
 using Microsoft.Extensions.Options;
 using Telegram.Bot;
+using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Types.ReplyMarkups;
 
 namespace ApiJiraTools.Services;
 
@@ -72,7 +74,20 @@ public sealed class ReminderSchedulerService : BackgroundService
             try
             {
                 var text = $"⏰ *Recordatorio*\n\n{EscapeMd(r.Message)}";
-                await bot.SendMessage(r.ChatId, text, parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+
+                // Botón "✅ Ya lo hice" para poder silenciar el ciclo (útil sobre todo en interval).
+                var keyboard = new InlineKeyboardMarkup(new[]
+                {
+                    InlineKeyboardButton.WithCallbackData("✅ Ya lo hice", $"reminder_done:{r.Id}"),
+                });
+
+                await bot.SendMessage(
+                    r.ChatId,
+                    text,
+                    parseMode: ParseMode.MarkdownV2,
+                    replyMarkup: keyboard,
+                    cancellationToken: ct);
+
                 _store.UpdateLastFired(r.Id, nowArg);
 
                 // Recordatorios de una sola vez: deshabilitar
@@ -102,6 +117,12 @@ public sealed class ReminderSchedulerService : BackgroundService
     /// </summary>
     public static bool ShouldFireNow(Reminder r, DateTime nowArg)
     {
+        // Respetar DoneUntil (lo setea /hecho o el botón inline)
+        if (r.DoneUntil.HasValue && nowArg < r.DoneUntil.Value) return false;
+
+        if (r.Schedule.Type.Equals("interval", StringComparison.OrdinalIgnoreCase))
+            return ShouldFireInterval(r, nowArg);
+
         if (!TryParseTime(r.Schedule.Time, out int hh, out int mm)) return false;
 
         var targetDate = ComputeTargetDate(r.Schedule, nowArg);
@@ -109,14 +130,39 @@ public sealed class ReminderSchedulerService : BackgroundService
 
         var fireTime = new DateTime(targetDate.Value.Year, targetDate.Value.Month, targetDate.Value.Day, hh, mm, 0);
 
-        // Tolerancia: disparar si estamos en la ventana [fireTime, fireTime + 59s]
-        // o si llegamos tarde pero dentro del mismo día (el container estuvo apagado)
         if (nowArg.Date != fireTime.Date) return false;
         if (nowArg < fireTime) return false;
 
-        // No disparar dos veces el mismo día
         if (r.LastFired.HasValue && r.LastFired.Value.Date == nowArg.Date)
             return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Para recordatorios type=interval: dispara cada intervalHours entre Time y EndTime.
+    /// Si LastFired es del mismo "slot" del día (startTime + N*interval), no redispara.
+    /// </summary>
+    private static bool ShouldFireInterval(Reminder r, DateTime nowArg)
+    {
+        if (!TryParseTime(r.Schedule.Time, out int startH, out int startM)) return false;
+        int interval = Math.Max(1, r.Schedule.IntervalHours);
+
+        int endH = 23, endM = 59;
+        if (!string.IsNullOrWhiteSpace(r.Schedule.EndTime))
+            TryParseTime(r.Schedule.EndTime, out endH, out endM);
+
+        var windowStart = new DateTime(nowArg.Year, nowArg.Month, nowArg.Day, startH, startM, 0);
+        var windowEnd = new DateTime(nowArg.Year, nowArg.Month, nowArg.Day, endH, endM, 0);
+
+        if (nowArg < windowStart || nowArg > windowEnd) return false;
+
+        // Slot "esperado" = el último punto start + k*interval <= now
+        var slotsPassed = (int)((nowArg - windowStart).TotalHours / interval);
+        var expectedFire = windowStart.AddHours(slotsPassed * interval);
+
+        // Si el último disparo fue en este slot o posterior, no redisparar
+        if (r.LastFired.HasValue && r.LastFired.Value >= expectedFire) return false;
 
         return true;
     }

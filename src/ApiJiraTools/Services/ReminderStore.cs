@@ -79,4 +79,18 @@ public sealed class ReminderStore
             SaveAll(list);
         }
     }
+
+    /// <summary>
+    /// Marca el recordatorio como hecho hasta una fecha/hora futura (horario local).
+    /// Para silenciar el resto del día pasar el próximo día a las 00:00.
+    /// </summary>
+    public bool MarkDoneUntil(string id, long chatId, DateTime untilLocal)
+    {
+        var list = LoadAll();
+        var r = list.FirstOrDefault(x => x.Id.Equals(id, StringComparison.OrdinalIgnoreCase) && x.ChatId == chatId);
+        if (r == null) return false;
+        r.DoneUntil = untilLocal;
+        SaveAll(list);
+        return true;
+    }
 }

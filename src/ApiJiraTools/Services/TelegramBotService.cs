@@ -58,7 +58,7 @@ public class TelegramBotService : BackgroundService
             },
             receiverOptions: new ReceiverOptions
             {
-                AllowedUpdates = [UpdateType.Message]
+                AllowedUpdates = [UpdateType.Message, UpdateType.CallbackQuery]
             },
             cancellationToken: stoppingToken
         );
@@ -68,6 +68,13 @@ public class TelegramBotService : BackgroundService
 
     private async Task HandleUpdateAsync(ITelegramBotClient bot, Update update, CancellationToken ct)
     {
+        // Botones inline (reminders "ya lo hice", etc.)
+        if (update.CallbackQuery is { } cq)
+        {
+            await HandleCallbackQueryAsync(bot, cq, ct);
+            return;
+        }
+
         if (update.Message?.Text is not { } text)
             return;
 
@@ -105,13 +112,16 @@ public class TelegramBotService : BackgroundService
                 "/recordar" => await HandleRecordar(arg, chatId, bot, ct),
                 "/recordatorios" => HandleListReminders(chatId),
                 "/olvidar" => HandleForgetReminder(arg, chatId),
+                "/hecho" => HandleReminderDone(arg, chatId),
                 "/guardar" => HandleSaveNote(arg, chatId),
                 "/dato" => HandleGetNote(arg, chatId),
                 "/datos" => HandleListNotes(chatId),
                 "/borrar" => HandleDeleteNote(arg, chatId),
                 "/resumen" => await HandleResumen(arg, chatId, bot, ct),
                 "/ideas" => await HandleIdeas(projectArg, ct),
-                _ => null
+                _ => command.StartsWith('/')
+                    ? $"❓ No reconozco el comando `{EscapeMd(command)}`\\. Escribí `/help` para ver los disponibles\\."
+                    : null
             };
 
             if (response != null)
@@ -202,8 +212,9 @@ public class TelegramBotService : BackgroundService
             `/alerts` — Chequeo de alertas ahora
 
             *⏰ Recordatorios*
-            `/recordar <texto>` — Ej: _recordame pagar el crédito 2 días hábiles antes del 25 de cada mes a las 9_
+            `/recordar <texto>` — Ej: _cada 1 hora entre las 9 y las 18 revisar CTA\-1014_
             `/recordatorios` — Lista tus recordatorios
+            `/hecho <id>` — Marca como hecho por hoy \(también hay botón ✅ en cada aviso\)
             `/olvidar <id>` — Elimina un recordatorio
 
             *📒 Datos guardados*
@@ -1677,6 +1688,60 @@ public class TelegramBotService : BackgroundService
             : $"⚠️ No encontré un recordatorio con id `{EscapeMd(arg.Trim())}`\\.";
     }
 
+    private string HandleReminderDone(string? arg, long chatId)
+    {
+        if (string.IsNullOrWhiteSpace(arg))
+            return "Uso: `/hecho <id>` \\— marca el recordatorio como hecho por hoy";
+
+        using var scope = _services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<ReminderStore>();
+        var untilLocal = DateTime.Now.Date.AddDays(1); // silenciar hasta mañana 00:00 local
+        return store.MarkDoneUntil(arg.Trim(), chatId, untilLocal)
+            ? $"✅ Recordatorio `{EscapeMd(arg.Trim())}` marcado como hecho por hoy\\."
+            : $"⚠️ No encontré un recordatorio con id `{EscapeMd(arg.Trim())}`\\.";
+    }
+
+    /// <summary>
+    /// Maneja los clicks a los botones inline. Por ahora solo "reminder_done:&lt;id&gt;".
+    /// </summary>
+    private async Task HandleCallbackQueryAsync(ITelegramBotClient bot, Telegram.Bot.Types.CallbackQuery cq, CancellationToken ct)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(cq.Data)) return;
+            var chatId = cq.Message?.Chat.Id ?? cq.From.Id;
+
+            if (cq.Data.StartsWith("reminder_done:", StringComparison.OrdinalIgnoreCase))
+            {
+                var id = cq.Data["reminder_done:".Length..];
+                using var scope = _services.CreateScope();
+                var store = scope.ServiceProvider.GetRequiredService<ReminderStore>();
+                var until = DateTime.Now.Date.AddDays(1);
+                bool ok = store.MarkDoneUntil(id, chatId, until);
+
+                await bot.AnswerCallbackQuery(cq.Id, ok ? "✅ Listo, te dejo tranquilo por hoy" : "No encontré el recordatorio", cancellationToken: ct);
+
+                // Tachar el texto del mensaje original
+                if (ok && cq.Message != null)
+                {
+                    try
+                    {
+                        var newText = $"✅ _Recordatorio marcado como hecho_\n\n~{EscapeMd(cq.Message.Text ?? "")}~";
+                        await bot.EditMessageText(chatId, cq.Message.MessageId, newText, parseMode: ParseMode.MarkdownV2, cancellationToken: ct);
+                    }
+                    catch { /* edición no crítica */ }
+                }
+                return;
+            }
+
+            await bot.AnswerCallbackQuery(cq.Id, cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error manejando callback query");
+        }
+    }
+
     private static string FormatSchedule(ReminderSchedule s)
     {
         var hhmm = s.Time ?? "09:00";
@@ -1698,6 +1763,11 @@ public class TelegramBotService : BackgroundService
                 return $"el día {s.DayOfMonth} de cada mes a las {hhmm}";
             case "yearly":
                 return $"todos los {s.DayOfMonth} de {MonthEs(s.Month ?? 1)} a las {hhmm}";
+            case "interval":
+                var interval = Math.Max(1, s.IntervalHours);
+                var endPart = !string.IsNullOrWhiteSpace(s.EndTime) ? $" hasta las {s.EndTime}" : "";
+                var hoursLabel = interval == 1 ? "hora" : $"{interval} horas";
+                return $"cada {hoursLabel} desde las {hhmm}{endPart}";
             default:
                 return $"({s.Type})";
         }

@@ -23,13 +23,15 @@ public sealed class ReminderParser
         var schema = @"{
   ""message"": ""mensaje del recordatorio sin la parte del cuándo"",
   ""schedule"": {
-    ""type"": ""once|daily|weekly|monthly|yearly"",
+    ""type"": ""once|daily|weekly|monthly|yearly|interval"",
     ""date"": ""YYYY-MM-DD"",
     ""dayOfWeek"": ""mon|tue|wed|thu|fri|sat|sun"",
     ""dayOfMonth"": 25,
     ""month"": 3,
     ""offsetBusinessDays"": -2,
-    ""time"": ""HH:mm""
+    ""time"": ""HH:mm"",
+    ""endTime"": ""HH:mm"",
+    ""intervalHours"": 1
   }
 }";
         var prompt =
@@ -45,6 +47,7 @@ public sealed class ReminderParser
             "- Para \"día X de cada mes\": type=monthly, dayOfMonth=X.\n" +
             "- Para \"N días hábiles antes/después del día X de cada mes\": type=monthly, dayOfMonth=X, offsetBusinessDays=±N (negativo=antes, positivo=después).\n" +
             "- Para \"todos los X de mes Y\": type=yearly, dayOfMonth=X, month=Y.\n" +
+            "- Para \"cada N horas\" o \"cada hora\" (con o sin ventana): type=interval, intervalHours=N (default 1), time=hora de inicio (default 09:00), endTime=hora de fin si se indica (omitir si no).\n" +
             "- Omití los campos que no apliquen al tipo.\n" +
             "- Si el texto está confuso o no podés inferir, respondé {\"error\": \"no entendí\"}.\n";
 
@@ -95,6 +98,10 @@ public sealed class ReminderParser
                 sched.Month = m.GetInt32();
             if (schedEl.TryGetProperty("offsetBusinessDays", out var ob) && ob.ValueKind == JsonValueKind.Number)
                 sched.OffsetBusinessDays = ob.GetInt32();
+            if (schedEl.TryGetProperty("endTime", out var et) && et.ValueKind == JsonValueKind.String)
+                sched.EndTime = et.GetString();
+            if (schedEl.TryGetProperty("intervalHours", out var ih) && ih.ValueKind == JsonValueKind.Number)
+                sched.IntervalHours = ih.GetInt32();
 
             return (new Reminder
             {
