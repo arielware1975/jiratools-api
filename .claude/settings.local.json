@@ -7,7 +7,9 @@
       "Bash(pkill -f \"dotnet.*ApiJiraTools\")",
       "Bash(gh auth:*)",
       "Bash(gh repo:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(ssh -o BatchMode=yes -o ConnectTimeout=5 arielware@casiano \"echo OK && hostname && pwd\")",
+      "Bash(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 arielware@casiano \"echo OK && whoami && hostname\")"
     ]
   }
 }

@@ -119,9 +119,7 @@ public class TelegramBotService : BackgroundService
                 "/borrar" => HandleDeleteNote(arg, chatId),
                 "/resumen" => await HandleResumen(arg, chatId, bot, ct),
                 "/ideas" => await HandleIdeas(projectArg, ct),
-                _ => command.StartsWith('/')
-                    ? $"❓ No reconozco el comando `{EscapeMd(command)}`\\. Escribí `/help` para ver los disponibles\\."
-                    : null
+                _ => UnknownCommandResponse(command)
             };
 
             if (response != null)
@@ -158,6 +156,29 @@ public class TelegramBotService : BackgroundService
         _defaultProject[chatId] = pk;
         SaveDefaultProjects();
         return $"✅ Proyecto por defecto: *{EscapeMd(pk)}*\nTodos los comandos usarán este proyecto si no especificás otro\\.";
+    }
+
+    /// <summary>
+    /// Respuesta para texto que no matchea ningún comando. Si empieza con "/" lo trata
+    /// como comando desconocido; si es texto libre, sugiere usar un comando.
+    /// </summary>
+    private static string UnknownCommandResponse(string command)
+    {
+        var header = command.StartsWith('/')
+            ? $"❓ No reconozco el comando `{EscapeMd(command)}`\\."
+            : "🤖 Soy un bot de comandos \\— no respondo texto libre\\.";
+
+        return header + "\n\n" + """
+            *Comandos más usados:*
+            ⚙️ `/help` — Ver todos los comandos
+            📌 `/project CTA` — Setea proyecto por defecto
+            📊 `/status` · `/burndown` · `/scope`
+            🧪 `/checkstg` · `/checkprod`
+            💡 `/ideas` · `/resumen debin`
+            🤖 `/analyze PC\-255` · `/review PC\-255`
+            ⏰ `/recordar <texto>` · `/recordatorios`
+            📒 `/guardar clave: valor` · `/dato clave` · `/datos`
+            """;
     }
 
     private static string GetHelpText(long chatId)
