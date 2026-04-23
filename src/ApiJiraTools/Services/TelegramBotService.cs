@@ -83,6 +83,11 @@ public class TelegramBotService : BackgroundService
         var command = parts[0].ToLowerInvariant().Split('@')[0]; // remove @botname
         var arg = parts.Length > 1 ? parts[1].Trim() : null;
 
+        // Feedback inmediato: "typing..." en el tope del chat.
+        // Se dispara una tarea aparte que refresca el action cada 4s hasta que termina el handler.
+        using var typingCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var typingTask = KeepTypingAsync(bot, chatId, typingCts.Token);
+
         // Para comandos que usan projectKey, resolver con el default del chat
         var projectArg = ResolveProjectArg(arg, chatId);
 
@@ -119,7 +124,7 @@ public class TelegramBotService : BackgroundService
                 "/borrar" => HandleDeleteNote(arg, chatId),
                 "/resumen" => await HandleResumen(arg, chatId, bot, ct),
                 "/ideas" => await HandleIdeas(projectArg, ct),
-                _ => UnknownCommandResponse(command)
+                _ => await HandleUnknownOrFreeText(text, command, chatId, ct)
             };
 
             if (response != null)
@@ -130,6 +135,29 @@ public class TelegramBotService : BackgroundService
             _logger.LogError(ex, "Error procesando comando {Command}", command);
             await bot.SendMessage(chatId, $"Error: {ex.Message}", cancellationToken: ct);
         }
+        finally
+        {
+            typingCts.Cancel();
+            try { await typingTask; } catch { /* silencioso */ }
+        }
+    }
+
+    /// <summary>
+    /// Mantiene el "typing..." arriba del chat refrescando cada 4 segundos
+    /// hasta que se cancele (cuando el handler termina).
+    /// </summary>
+    private static async Task KeepTypingAsync(ITelegramBotClient bot, long chatId, CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try { await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct); }
+                catch { /* ignorar fallo en action */ }
+                await Task.Delay(TimeSpan.FromSeconds(4), ct);
+            }
+        }
+        catch (OperationCanceledException) { }
     }
 
     private static string NeedProjectMsg(string cmd)
@@ -159,14 +187,13 @@ public class TelegramBotService : BackgroundService
     }
 
     /// <summary>
-    /// Respuesta para texto que no matchea ningún comando. Si empieza con "/" lo trata
-    /// como comando desconocido; si es texto libre, sugiere usar un comando.
+    /// Cheat-sheet compacta para fallback cuando Gemini falla o no aplica.
     /// </summary>
     private static string UnknownCommandResponse(string command)
     {
         var header = command.StartsWith('/')
             ? $"❓ No reconozco el comando `{EscapeMd(command)}`\\."
-            : "🤖 Soy un bot de comandos \\— no respondo texto libre\\.";
+            : "🤖 No entendí\\. Podés intentar de nuevo con otras palabras o usar un comando directo\\.";
 
         return header + "\n\n" + """
             *Comandos más usados:*
@@ -179,6 +206,74 @@ public class TelegramBotService : BackgroundService
             ⏰ `/recordar <texto>` · `/recordatorios`
             📒 `/guardar clave: valor` · `/dato clave` · `/datos`
             """;
+    }
+
+    /// <summary>
+    /// Cuando el usuario escribe algo que no matchea un comando:
+    /// - Si empieza con "/" es un comando desconocido → cheat-sheet.
+    /// - Si es texto libre → Gemini intenta entender la intención y responde.
+    /// </summary>
+    private async Task<string> HandleUnknownOrFreeText(string originalText, string command, long chatId, CancellationToken ct)
+    {
+        if (command.StartsWith('/'))
+            return UnknownCommandResponse(command);
+
+        // Texto libre: mandamos a Gemini con contexto de qué sabe hacer el bot
+        try
+        {
+            using var scope = _services.CreateScope();
+            var gemini = scope.ServiceProvider.GetRequiredService<GeminiService>();
+
+            var defaultProject = _defaultProject.TryGetValue(chatId, out var p) ? p : "(sin default)";
+            var prompt = $$"""
+                Sos un asistente conversacional para un equipo de Jira/Telegram. El usuario te escribió algo en lenguaje natural.
+                Tu trabajo es responder de forma útil en español rioplatense, corto y claro (máximo 6-8 líneas).
+
+                Tenés estos comandos disponibles para sugerir cuando corresponda. NO los inventes, usá exactamente estos:
+                - `/status` — estado del sprint activo (velocidad, carry-over, alertas).
+                - `/velocity` — SP completados por persona en el sprint.
+                - `/burndown` — gráfico de burndown del sprint (imagen).
+                - `/scope` — scope del próximo sprint (semáforo, velocidad, proyección).
+                - `/checkstg` — verifica cards STG del sprint.
+                - `/checkprod` — checklist GO/NO-GO de producción.
+                - `/sprints` · `/sprint <id>` — listar sprints o ver uno.
+                - `/ticket KEY-123` · `/tree KEY-123` · `/epic KEY-123` — detalle de issues.
+                - `/recent` — issues creados en los últimos 7 días.
+                - `/release` — auditoría del release actual.
+                - `/ideas` — ideas en Ahora / Siguiente.
+                - `/resumen <tema>` — resumen ejecutivo de ideas por tema (ej. debin).
+                - `/analyze KEY-123` — análisis IA de una idea o issue.
+                - `/review KEY-123` — revisa formato de idea contra estándar Finket.
+                - `/recordar <texto>` — crear recordatorio (soporta "cada X horas", "los lunes", etc).
+                - `/recordatorios` · `/hecho <id>` · `/olvidar <id>` — gestionar recordatorios.
+                - `/guardar clave: valor` · `/dato clave` · `/datos` · `/borrar clave` — notas personales.
+                - `/project CTA` — setear proyecto por defecto.
+                - `/help` — ayuda.
+
+                Proyecto por defecto del usuario: {{defaultProject}}
+
+                Reglas:
+                - Si el pedido se resuelve con un comando, sugerilo con la sintaxis exacta (ej: "Probá con `/status` o `/burndown`").
+                - Si hace una pregunta general (qué es una épica, cómo funciona el scope, etc.), respondé con tu conocimiento.
+                - Si no entendés qué quiere, pedile que reformule o que use `/help`.
+                - No uses markdown MarkdownV2 (nada de backslashes de escape raros). Usá formato plano o asterisco simple, yo me encargo de escapar.
+                - No prometas ejecutar cosas automáticamente; el usuario tiene que invocar los comandos vos solo sugerís.
+
+                Mensaje del usuario:
+                "{{originalText}}"
+                """;
+
+            var reply = await gemini.GenerateAsync(prompt);
+            if (string.IsNullOrWhiteSpace(reply) || reply.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
+                return UnknownCommandResponse(command);
+
+            return EscapeMd(reply.Trim());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Gemini falló en HandleUnknownOrFreeText");
+            return UnknownCommandResponse(command);
+        }
     }
 
     private static string GetHelpText(long chatId)
